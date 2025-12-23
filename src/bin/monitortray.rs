@@ -26,6 +26,10 @@ mod windows_tray {
         Win32::{
             Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
             System::LibraryLoader::GetModuleHandleW,
+            Graphics::Gdi::{
+                CreateBitmap, CreateDIBSection, DeleteObject, BI_RGB, BITMAPINFO, BITMAPINFOHEADER,
+                DIB_RGB_COLORS, HBITMAP,
+            },
             UI::{
                 Shell::{
                     Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
@@ -36,7 +40,8 @@ mod windows_tray {
                     DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW, PostQuitMessage,
                     RegisterClassW, SetForegroundWindow, TrackPopupMenu, TranslateMessage,
                     CREATESTRUCTW, HMENU, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN,
-                    TPM_LEFTALIGN, TPM_RETURNCMD,
+                    TPM_LEFTALIGN, TPM_RETURNCMD, MF_DISABLED, MF_GRAYED, CreateIconIndirect,
+                    ICONINFO,
                     TPM_RIGHTBUTTON, WM_LBUTTONUP, WM_NCCREATE, WM_RBUTTONUP, WM_USER, WNDCLASSW,
                     WS_OVERLAPPED,
                 },
@@ -139,8 +144,19 @@ mod windows_tray {
 
             let menu = unsafe { CreatePopupMenu() }.context("CreatePopupMenu")?;
 
+            // Section header
+            unsafe {
+                AppendMenuW(
+                    menu,
+                    MF_STRING | MF_DISABLED | MF_GRAYED,
+                    0,
+                    w!("Inputs"),
+                )
+                .context("AppendMenuW(header:inputs)")?;
+            }
+
             for (cmd, (name, value)) in &self.inputs {
-                let label = format!("{name} ({value})");
+                let label = format!("{} ({value})", pretty_input_label(name));
                 let wlabel = wide(&label);
                 unsafe {
                     AppendMenuW(
@@ -155,6 +171,16 @@ mod windows_tray {
 
             unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) }
                 .context("AppendMenuW(separator)")?;
+
+            unsafe {
+                AppendMenuW(
+                    menu,
+                    MF_STRING | MF_DISABLED | MF_GRAYED,
+                    0,
+                    w!("Actions"),
+                )
+                .context("AppendMenuW(header:actions)")?;
+            }
             unsafe {
                 AppendMenuW(menu, MF_STRING, CMD_RELOAD as usize, w!("Reload config"))
                     .context("AppendMenuW(reload)")?;
@@ -170,13 +196,15 @@ mod windows_tray {
             let hwnd = self.hwnd()?;
             self.rebuild_menu().context("build menu")?;
 
-            let icon = unsafe {
-                LoadIconW(
-                    None,
-                    windows::Win32::UI::WindowsAndMessaging::IDI_APPLICATION,
-                )
-            }
-            .context("LoadIconW(IDI_APPLICATION)")?;
+            let icon = create_tray_icon().unwrap_or_else(|_| {
+                unsafe {
+                    LoadIconW(
+                        None,
+                        windows::Win32::UI::WindowsAndMessaging::IDI_APPLICATION,
+                    )
+                }
+                .unwrap_or_default()
+            });
             let tip = "monitortray";
 
             let mut nid = NOTIFYICONDATAW::default();
@@ -395,5 +423,106 @@ mod windows_tray {
             return Err(anyhow!(WinError::from_thread()));
         }
         Ok(())
+    }
+
+    fn pretty_input_label(key: &str) -> &str {
+        match key {
+            "dp1" => "DisplayPort 1",
+            "dp2" => "DisplayPort 2",
+            "usb_c" => "USB-C",
+            "usbc" => "USB-C",
+            "hdmi1" => "HDMI 1",
+            "hdmi2" => "HDMI 2",
+            _ => key,
+        }
+    }
+
+    fn create_tray_icon() -> Result<windows::Win32::UI::WindowsAndMessaging::HICON> {
+        // Create a simple 32x32 ARGB icon (dark background + blue "monitor" outline).
+        const W: i32 = 32;
+        const H: i32 = 32;
+
+        unsafe {
+            let mut bmi = BITMAPINFO::default();
+            bmi.bmiHeader = BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: W,
+                biHeight: -H, // top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0 as u32,
+                ..Default::default()
+            };
+
+            let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+            let color: HBITMAP = CreateDIBSection(
+                None,
+                &bmi,
+                DIB_RGB_COLORS,
+                &mut bits,
+                None,
+                0,
+            )
+            .context("CreateDIBSection")?;
+
+            if bits.is_null() {
+                return Err(anyhow!("CreateDIBSection returned null bits"));
+            }
+
+            let pixels = bits as *mut u32;
+            let bg: u32 = 0xFF1B1E24; // AARRGGBB
+            let stroke: u32 = 0xFF2A9DF4;
+            let stroke2: u32 = 0xFF66D9EF;
+
+            for y in 0..H {
+                for x in 0..W {
+                    *pixels.offset((y * W + x) as isize) = bg;
+                }
+            }
+
+            // Monitor rectangle border
+            for x in 6..26 {
+                *pixels.offset((6 * W + x) as isize) = stroke;
+                *pixels.offset((22 * W + x) as isize) = stroke;
+            }
+            for y in 6..23 {
+                *pixels.offset((y * W + 6) as isize) = stroke;
+                *pixels.offset((y * W + 25) as isize) = stroke;
+            }
+            // Inner accent
+            for x in 8..24 {
+                *pixels.offset((8 * W + x) as isize) = stroke2;
+            }
+            // Stand
+            for y in 23..28 {
+                *pixels.offset((y * W + 15) as isize) = stroke;
+                *pixels.offset((y * W + 16) as isize) = stroke;
+            }
+            for x in 11..21 {
+                *pixels.offset((28 * W + x) as isize) = stroke;
+            }
+
+            // Mask bitmap (all-zeros = opaque everywhere).
+            let mask = CreateBitmap(W, H, 1, 1, None);
+            if mask.0.is_null() {
+                let _ = DeleteObject(color.into());
+                return Err(anyhow!(WinError::from_thread())).context("CreateBitmap(mask)");
+            }
+
+            let icon_info = ICONINFO {
+                fIcon: true.into(),
+                xHotspot: 0,
+                yHotspot: 0,
+                hbmMask: mask,
+                hbmColor: color,
+            };
+
+            let icon = CreateIconIndirect(&icon_info).context("CreateIconIndirect")?;
+
+            let _ = DeleteObject(mask.into());
+            let _ = DeleteObject(color.into());
+
+            Ok(icon)
+        }
     }
 }
