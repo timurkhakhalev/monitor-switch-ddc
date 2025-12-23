@@ -87,12 +87,20 @@ Click the tray icon (left or right click) to pick an input preset.
 
 ```json
 {
+  "start_with_windows": true,
   "default_display": "name:XG27ACS",
   "inputs": { "dp1": 15, "usb_c": 26 }
 }
 ```
 
 Then `monitortray` shows `dp1` / `usb_c` in the menu (and you can add more presets).
+
+`monitortray` menu actions:
+
+- Start with Windows: toggles user startup (HKCU Run key) and updates `start_with_windows` in the config.
+- Edit config: opens the config file in your default editor (creates a minimal config file if missing).
+- Open config folder: opens the config directory.
+- Reload config: re-reads the config and rebuilds the tray menu.
 
 ### Config (optional)
 

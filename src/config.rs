@@ -2,16 +2,22 @@ use std::{
     collections::HashMap,
     env,
     fs,
+    path::Path,
     path::PathBuf,
 };
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::platform::DisplayInfo;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    /// If set, the Windows tray app will add/remove itself from user startup accordingly.
+    #[serde(default)]
+    pub start_with_windows: Option<bool>,
+
     #[serde(default)]
     pub default_display: Option<String>,
 
@@ -80,6 +86,70 @@ pub fn resolve_config_path() -> Option<PathBuf> {
     }
 
     None
+}
+
+pub fn ensure_config_file_exists() -> Result<PathBuf> {
+    let Some(path) = resolve_config_path() else {
+        return Err(anyhow!(
+            "No config path available (set MONITORCTL_CONFIG or ensure APPDATA/HOME is present)"
+        ));
+    };
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create config dir {}", parent.display()))?;
+    }
+
+    if !path.exists() {
+        let template = serde_json::json!({
+            "start_with_windows": false,
+            "inputs": {}
+        });
+        let mut s = serde_json::to_string_pretty(&template).context("serialize config template")?;
+        s.push('\n');
+        fs::write(&path, s.as_bytes()).with_context(|| format!("write {}", path.display()))?;
+    }
+
+    Ok(path)
+}
+
+pub fn patch_start_with_windows(enabled: bool) -> Result<PathBuf> {
+    let Some(path) = resolve_config_path() else {
+        return Err(anyhow!(
+            "No config path available (set MONITORCTL_CONFIG or ensure APPDATA/HOME is present)"
+        ));
+    };
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create config dir {}", parent.display()))?;
+    }
+
+    let mut root = read_json_or_empty_object(&path)?;
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("config root must be a JSON object"))?;
+
+    obj.insert(
+        "start_with_windows".to_string(),
+        Value::Bool(enabled),
+    );
+
+    let mut s = serde_json::to_string_pretty(&root).context("serialize config")?;
+    s.push('\n');
+    fs::write(&path, s.as_bytes()).with_context(|| format!("write {}", path.display()))?;
+    Ok(path)
+}
+
+fn read_json_or_empty_object(path: &Path) -> Result<Value> {
+    if !path.exists() {
+        return Ok(Value::Object(Default::default()));
+    }
+
+    let bytes = fs::read(path).with_context(|| format!("reading config {}", path.display()))?;
+    let v: Value =
+        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(v)
 }
 
 pub fn resolve(

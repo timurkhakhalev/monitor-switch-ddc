@@ -17,6 +17,7 @@ mod windows_tray {
     use std::{
         collections::BTreeMap,
         mem::size_of,
+        path::Path,
     };
 
     use anyhow::{anyhow, Context, Result};
@@ -26,12 +27,17 @@ mod windows_tray {
         Win32::{
             Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
             System::LibraryLoader::GetModuleHandleW,
+            System::Registry::{
+                RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ,
+                RRF_RT_REG_SZ,
+            },
             Graphics::Gdi::{
                 CreateBitmap, CreateDIBSection, DeleteObject, BI_RGB, BITMAPINFO, BITMAPINFOHEADER,
                 DIB_RGB_COLORS, HBITMAP,
             },
             UI::{
                 Shell::{
+                    ShellExecuteW,
                     Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
                     NIM_DELETE, NIM_MODIFY, NOTIFY_ICON_MESSAGE,
                 },
@@ -41,7 +47,7 @@ mod windows_tray {
                     RegisterClassW, SetForegroundWindow, TrackPopupMenu, TranslateMessage,
                     CREATESTRUCTW, HMENU, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN,
                     TPM_LEFTALIGN, TPM_RETURNCMD, MF_DISABLED, MF_GRAYED, CreateIconIndirect,
-                    ICONINFO,
+                    ICONINFO, MF_CHECKED, MF_UNCHECKED, SW_SHOWNORMAL,
                     TPM_RIGHTBUTTON, WM_LBUTTONUP, WM_NCCREATE, WM_RBUTTONUP, WM_USER, WNDCLASSW,
                     WS_OVERLAPPED,
                 },
@@ -54,6 +60,9 @@ mod windows_tray {
     const CMD_BASE_INPUT: u16 = 2000;
     const CMD_RELOAD: u16 = 5000;
     const CMD_QUIT: u16 = 5001;
+    const CMD_TOGGLE_STARTUP: u16 = 5002;
+    const CMD_EDIT_CONFIG: u16 = 5003;
+    const CMD_OPEN_CONFIG_FOLDER: u16 = 5004;
 
     pub fn run() -> Result<()> {
         unsafe {
@@ -111,6 +120,7 @@ mod windows_tray {
         // Command id -> raw VCP value.
         inputs: BTreeMap<u16, (String, u16)>,
         display_selector: String,
+        start_with_windows: bool,
         backend: Box<dyn Backend>,
         last_error: Option<String>,
     }
@@ -118,7 +128,9 @@ mod windows_tray {
     impl State {
         fn new() -> Result<Self> {
             let backend = platform::backend().context("select backend")?;
-            let (display_selector, inputs) = load_display_and_inputs(&*backend)?;
+            let (display_selector, inputs, start_with_windows_pref) =
+                load_display_and_inputs(&*backend)?;
+            let (start_with_windows, startup_error) = apply_startup_pref(start_with_windows_pref);
 
             Ok(Self {
                 hwnd: None,
@@ -126,8 +138,9 @@ mod windows_tray {
                 menu: None,
                 inputs,
                 display_selector,
+                start_with_windows,
                 backend,
-                last_error: None,
+                last_error: startup_error,
             })
         }
 
@@ -182,6 +195,23 @@ mod windows_tray {
                 .context("AppendMenuW(header:actions)")?;
             }
             unsafe {
+                let flags = MF_STRING
+                    | if self.start_with_windows {
+                        MF_CHECKED
+                    } else {
+                        MF_UNCHECKED
+                    };
+                AppendMenuW(menu, flags, CMD_TOGGLE_STARTUP as usize, w!("Start with Windows"))
+                    .context("AppendMenuW(startup)")?;
+                AppendMenuW(menu, MF_STRING, CMD_EDIT_CONFIG as usize, w!("Edit config"))
+                    .context("AppendMenuW(edit config)")?;
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    CMD_OPEN_CONFIG_FOLDER as usize,
+                    w!("Open config folder"),
+                )
+                .context("AppendMenuW(open config folder)")?;
                 AppendMenuW(menu, MF_STRING, CMD_RELOAD as usize, w!("Reload config"))
                     .context("AppendMenuW(reload)")?;
                 AppendMenuW(menu, MF_STRING, CMD_QUIT as usize, w!("Quit"))
@@ -266,6 +296,15 @@ mod windows_tray {
                     CMD_RELOAD => {
                         self.reload_config().context("reload config")?;
                     }
+                    CMD_TOGGLE_STARTUP => {
+                        self.toggle_start_with_windows().context("toggle startup")?;
+                    }
+                    CMD_EDIT_CONFIG => {
+                        self.edit_config().context("edit config")?;
+                    }
+                    CMD_OPEN_CONFIG_FOLDER => {
+                        self.open_config_folder().context("open config folder")?;
+                    }
                     _ => {
                         if let Some((_name, value)) = self.inputs.get(&cmd).cloned() {
                             self.set_input(value).context("set input")?;
@@ -287,12 +326,43 @@ mod windows_tray {
         }
 
         fn reload_config(&mut self) -> Result<()> {
-            let (display_selector, inputs) = load_display_and_inputs(&*self.backend)?;
+            let (display_selector, inputs, start_with_windows_pref) =
+                load_display_and_inputs(&*self.backend)?;
             self.display_selector = display_selector;
             self.inputs = inputs;
+            let (start_with_windows, startup_error) = apply_startup_pref(start_with_windows_pref);
+            self.start_with_windows = start_with_windows;
+            self.rebuild_menu()?;
+            self.last_error = startup_error;
+            self.update_tooltip();
+            Ok(())
+        }
+
+        fn toggle_start_with_windows(&mut self) -> Result<()> {
+            let next = !self.start_with_windows;
+            autostart::set_enabled(next).context("update registry startup entry")?;
+            let _path = config::patch_start_with_windows(next).context("update config")?;
+            self.start_with_windows = next;
             self.rebuild_menu()?;
             self.last_error = None;
             self.update_tooltip();
+            Ok(())
+        }
+
+        fn edit_config(&mut self) -> Result<()> {
+            let path = config::ensure_config_file_exists().context("ensure config exists")?;
+            shell_open(&path).with_context(|| format!("open {}", path.display()))?;
+            Ok(())
+        }
+
+        fn open_config_folder(&mut self) -> Result<()> {
+            let Some(path) = config::resolve_config_path() else {
+                return Err(anyhow!("No config path available"));
+            };
+            let parent = path
+                .parent()
+                .ok_or_else(|| anyhow!("No parent directory for config path"))?;
+            shell_open(parent).with_context(|| format!("open {}", parent.display()))?;
             Ok(())
         }
 
@@ -372,10 +442,13 @@ mod windows_tray {
         }
     }
 
-    fn load_display_and_inputs(backend: &dyn Backend) -> Result<(String, BTreeMap<u16, (String, u16)>)> {
+    fn load_display_and_inputs(
+        backend: &dyn Backend,
+    ) -> Result<(String, BTreeMap<u16, (String, u16)>, Option<bool>)> {
         let report = backend.list_displays().context("list displays")?;
         let cfg = config::load_optional()?;
         let resolved = config::resolve(cfg.as_ref(), &report.displays, None);
+        let start_with_windows_pref = cfg.as_ref().and_then(|c| c.start_with_windows);
 
         let mut inputs: BTreeMap<u16, (String, u16)> = BTreeMap::new();
         let mut next_cmd = CMD_BASE_INPUT;
@@ -399,7 +472,151 @@ mod windows_tray {
             }
         }
 
-        Ok((resolved.display_selector, inputs))
+        Ok((resolved.display_selector, inputs, start_with_windows_pref))
+    }
+
+    fn apply_startup_pref(pref: Option<bool>) -> (bool, Option<String>) {
+        match pref {
+            Some(enabled) => match autostart::set_enabled(enabled) {
+                Ok(()) => (enabled, None),
+                Err(e) => (enabled, Some(e.to_string())),
+            },
+            None => match autostart::is_enabled() {
+                Ok(enabled) => (enabled, None),
+                Err(e) => (false, Some(e.to_string())),
+            },
+        }
+    }
+
+    fn shell_open(path: &Path) -> Result<()> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| anyhow!("Non-UTF-8 path: {}", path.display()))?;
+        let wpath = wide(path);
+        unsafe {
+            let h = ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR::from_raw(wpath.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+            // Per Win32 docs: values <= 32 indicate an error.
+            if (h.0 as isize) <= 32 {
+                return Err(anyhow!("ShellExecuteW failed ({})", h.0 as isize));
+            }
+        }
+        Ok(())
+    }
+
+    mod autostart {
+        use super::*;
+        use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, WIN32_ERROR};
+        use windows::Win32::System::Registry::REG_VALUE_TYPE;
+
+        const RUN_SUBKEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+        const VALUE_NAME: &str = "monitortray";
+        const OK: WIN32_ERROR = WIN32_ERROR(0);
+
+        pub fn is_enabled() -> Result<bool> {
+            Ok(read_value()?.is_some())
+        }
+
+        pub fn set_enabled(enabled: bool) -> Result<()> {
+            if enabled {
+                let cmd = autostart_command()?;
+                write_value(&cmd)?;
+            } else {
+                delete_value()?;
+            }
+            Ok(())
+        }
+
+        fn autostart_command() -> Result<String> {
+            let exe = std::env::current_exe().context("current_exe")?;
+            Ok(format!("\"{}\"", exe.display()))
+        }
+
+        fn read_value() -> Result<Option<String>> {
+            let value_name = wide(VALUE_NAME);
+            let mut typ = REG_VALUE_TYPE::default();
+            let mut bytes: u32 = 0;
+            let status = unsafe {
+                RegGetValueW(
+                    HKEY_CURRENT_USER,
+                    RUN_SUBKEY,
+                    PCWSTR::from_raw(value_name.as_ptr()),
+                    RRF_RT_REG_SZ,
+                    Some(&mut typ as *mut REG_VALUE_TYPE),
+                    None,
+                    Some(&mut bytes),
+                )
+            };
+
+            if status == ERROR_FILE_NOT_FOUND {
+                return Ok(None);
+            }
+            if status != OK {
+                return Err(anyhow!("RegGetValueW(size) failed: {status:?}"));
+            }
+
+            let mut buf: Vec<u16> = vec![0u16; (bytes as usize / 2).max(1)];
+            let status = unsafe {
+                RegGetValueW(
+                    HKEY_CURRENT_USER,
+                    RUN_SUBKEY,
+                    PCWSTR::from_raw(value_name.as_ptr()),
+                    RRF_RT_REG_SZ,
+                    Some(&mut typ as *mut REG_VALUE_TYPE),
+                    Some(buf.as_mut_ptr() as *mut _),
+                    Some(&mut bytes),
+                )
+            };
+            if status != OK {
+                return Err(anyhow!("RegGetValueW(data) failed: {status:?}"));
+            }
+
+            let len = (bytes as usize / 2).saturating_sub(1);
+            Ok(Some(String::from_utf16_lossy(&buf[..len])))
+        }
+
+        fn write_value(cmd: &str) -> Result<()> {
+            let value_name = wide(VALUE_NAME);
+            let cmd = wide(cmd);
+            let status = unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    RUN_SUBKEY,
+                    PCWSTR::from_raw(value_name.as_ptr()),
+                    REG_SZ.0,
+                    Some(cmd.as_ptr() as *const _),
+                    (cmd.len() * 2) as u32,
+                )
+            };
+            if status != OK {
+                return Err(anyhow!("RegSetKeyValueW failed: {status:?}"));
+            }
+            Ok(())
+        }
+
+        fn delete_value() -> Result<()> {
+            let value_name = wide(VALUE_NAME);
+            let status = unsafe {
+                RegDeleteKeyValueW(
+                    HKEY_CURRENT_USER,
+                    RUN_SUBKEY,
+                    PCWSTR::from_raw(value_name.as_ptr()),
+                )
+            };
+            if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
+                return Ok(());
+            }
+            if status != OK {
+                return Err(anyhow!("RegDeleteKeyValueW failed: {status:?}"));
+            }
+            Ok(())
+        }
     }
 
     fn wide(s: &str) -> Vec<u16> {
