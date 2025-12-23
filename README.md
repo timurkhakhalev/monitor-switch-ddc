@@ -102,6 +102,31 @@ Then `monitortray` shows `dp1` / `usb_c` in the menu (and you can add more prese
 - Open config folder: opens the config directory.
 - Reload config: re-reads the config and rebuilds the tray menu.
 
+## macOS tray app (PoC)
+
+Build + run:
+
+```sh
+cargo build --bin monitortray
+./target/debug/monitortray
+```
+
+The app shows a menu bar item called `monitorctl`; click it to pick an input preset.
+
+`monitortray` menu actions:
+
+- Start at login: toggles a per-user LaunchAgent (`~/Library/LaunchAgents/com.monitorctl.monitorctl.plist`) and updates `start_with_windows` in the config (same key used cross-platform in this PoC).
+- Edit config: opens the config file in your default editor (creates a minimal config file if missing).
+- Open config folder: opens the config directory.
+- Reload config: re-reads the config and rebuilds the tray menu.
+
+### macOS `.app` bundle (recommended)
+
+```sh
+./scripts/build-macos-app.sh
+open "dist/monitorctl.app"
+```
+
 ### Config (optional)
 
 `monitorctl` can also map friendly preset names (like `dp1`, `usb_c`) to raw VCP `0x60` values.
