@@ -738,6 +738,7 @@ mod macos_tray {
         env,
         ffi::c_void,
         fs::OpenOptions,
+        io::Write,
         os::fd::AsRawFd,
         path::{Path, PathBuf},
         process::Command,
@@ -1224,9 +1225,21 @@ mod macos_tray {
             let cmd = tag as u16;
 
             if let Err(e) = state.handle_cmd(cmd, this as *const _ as id) {
-                state.last_error = Some(e.to_string());
+                let msg = e.to_string();
+                log_to_tmp("monitortray error", &msg);
+                state.last_error = Some(msg);
                 state.update_tooltip();
             }
+        }
+    }
+
+    fn log_to_tmp(prefix: &str, msg: &str) {
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/monitorctl.err")
+        {
+            let _ = writeln!(f, "{prefix}: {msg}");
         }
     }
 

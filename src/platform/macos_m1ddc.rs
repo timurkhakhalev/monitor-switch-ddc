@@ -1,4 +1,7 @@
-use std::process::Command;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -11,24 +14,58 @@ impl M1DdcBackend {
         Self
     }
 
-    fn ensure_m1ddc_present(&self) -> Result<()> {
-        let status = Command::new("sh")
-            .arg("-lc")
-            .arg("command -v m1ddc >/dev/null 2>&1")
-            .status()
-            .context("checking for m1ddc in PATH")?;
-        if !status.success() {
-            bail!("Missing dependency: `m1ddc`.\nInstall: `brew install m1ddc`");
+    fn resolve_m1ddc_path() -> Option<PathBuf> {
+        if let Ok(path) = std::env::var("MONITORCTL_M1DDC_PATH") {
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                return Some(path);
+            }
         }
-        Ok(())
+
+        // GUI apps / LaunchAgents often have a minimal PATH. Prefer common Homebrew paths.
+        for candidate in ["/opt/homebrew/bin/m1ddc", "/usr/local/bin/m1ddc"] {
+            let candidate = Path::new(candidate);
+            if candidate.is_file() {
+                return Some(candidate.to_path_buf());
+            }
+        }
+
+        // Fall back to PATH lookup (and add common Homebrew locations just in case).
+        let out = Command::new("sh")
+            .arg("-lc")
+            .arg("PATH=/opt/homebrew/bin:/usr/local/bin:$PATH command -v m1ddc")
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8(out.stdout).ok()?;
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(s);
+        path.is_file().then_some(path)
+    }
+
+    fn m1ddc_path(&self) -> Result<PathBuf> {
+        Self::resolve_m1ddc_path().ok_or_else(|| {
+            anyhow!(
+                "Missing dependency: `m1ddc`.\n\
+Install: `brew install m1ddc`\n\
+If you launch the tray app from Finder/LaunchAgent, PATH may not include Homebrew.\n\
+Expected locations: /opt/homebrew/bin/m1ddc or /usr/local/bin/m1ddc\n\
+Override with: MONITORCTL_M1DDC_PATH=/path/to/m1ddc"
+            )
+        })
     }
 
     fn run_m1ddc(&self, args: &[&str]) -> Result<String> {
-        self.ensure_m1ddc_present()?;
-        let out = Command::new("m1ddc")
+        let m1ddc = self.m1ddc_path()?;
+        let out = Command::new(&m1ddc)
             .args(args)
             .output()
-            .with_context(|| format!("running m1ddc {}", args.join(" ")))?;
+            .with_context(|| format!("running {} {}", m1ddc.display(), args.join(" ")))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -114,13 +151,18 @@ impl super::Backend for M1DdcBackend {
     fn doctor(&self) -> Result<DoctorReport> {
         let mut messages = Vec::new();
 
-        if let Err(e) = self.ensure_m1ddc_present() {
-            messages.push(e.to_string());
-            return Ok(DoctorReport {
-                ok: false,
-                message: messages.join("\n"),
-            });
-        }
+        let m1ddc = match self.m1ddc_path() {
+            Ok(p) => p,
+            Err(e) => {
+                messages.push(e.to_string());
+                return Ok(DoctorReport {
+                    ok: false,
+                    message: messages.join("\n"),
+                });
+            }
+        };
+
+        messages.push(format!("m1ddc: OK ({})", m1ddc.display()));
 
         match self.run_m1ddc(&["display", "list"]) {
             Ok(out) => {
@@ -132,7 +174,6 @@ impl super::Backend for M1DdcBackend {
                         message: messages.join("\n"),
                     });
                 }
-                messages.push("m1ddc: OK".to_string());
                 messages.push(format!("Detected displays:\n{}", out));
                 messages.push(
                     "Note: m1ddc can set input, but does not expose reading raw VCP 0x60 on all monitors."
