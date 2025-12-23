@@ -12,7 +12,12 @@
   - `get-input` (Windows only; reads raw VCP `0x60`)
 - macOS backend (PoC): uses `m1ddc` (`brew install m1ddc`)
 - Windows backend (PoC): uses Dxva2 High-Level Monitor Configuration API (DDC/CI wrapper)
-- Worked around macOS build issue caused by `:` in the repo folder name by setting Cargo target dir to `/tmp/monitorctl-target` in `.cargo/config.toml`.
+- Added optional JSON config + input presets:
+  - `monitorctl config-path` prints where config is loaded from
+  - `set-input` accepts either a number or a preset name (e.g. `dp1`)
+  - `get-input` / `set-input` can use a configured `default_display`
+- Windows display selector now supports `--display name:<substring>` (matches monitor description)
+- Documented macOS build workaround for `:` in the repo folder name (use `CARGO_TARGET_DIR=/tmp/monitorctl-target`).
 
 ## How to run (quick)
 

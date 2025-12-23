@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
+mod config;
 mod platform;
 
 #[derive(Parser, Debug)]
@@ -21,20 +22,24 @@ enum Command {
     /// Reads the current input source as raw VCP 0x60 value (Windows only in this PoC).
     GetInput {
         /// Display selector. On Windows this is a 1-based monitor index from `list`.
-        #[arg(long, default_value = "1")]
-        display: String,
+        /// If omitted, `monitorctl.json` / config defaults may be used.
+        #[arg(long)]
+        display: Option<String>,
     },
     /// Sets input source to a raw VCP 0x60 value (e.g., 26 for USB-C on XG27ACS).
     SetInput {
         /// Display selector. On macOS this is passed through to `m1ddc display <selector> ...`.
         /// Common values: "1", "uuid:<UUID>", "edid:<UUID>".
-        #[arg(long, default_value = "1")]
-        display: String,
-        /// Raw input value to set (VCP 0x60).
-        value: u16,
+        /// If omitted, `monitorctl.json` / config defaults may be used.
+        #[arg(long)]
+        display: Option<String>,
+        /// Raw input value to set (VCP 0x60) OR a configured preset name (e.g. "dp1").
+        value: String,
     },
     /// Checks local prerequisites and prints guidance.
     Doctor,
+    /// Prints the config path that would be used (if any).
+    ConfigPath,
 }
 
 fn main() -> Result<()> {
@@ -60,16 +65,28 @@ fn main() -> Result<()> {
         }
         Command::SetInput { display, value } => {
             let backend = platform::backend()?;
+            let report = backend.list_displays().context("list displays (for config)")?;
+            let cfg = config::load_optional()?;
+            let resolved = config::resolve(cfg.as_ref(), &report.displays, display.as_deref());
+            let value = config::parse_input_value(&value, &resolved)?;
             backend
-                .set_input(&display, value)
-                .with_context(|| format!("set input to {value} on display '{display}'"))?;
+                .set_input(&resolved.display_selector, value)
+                .with_context(|| {
+                    format!(
+                        "set input to {value} on display '{}'",
+                        resolved.display_selector
+                    )
+                })?;
             println!("{value}");
         }
         Command::GetInput { display } => {
             let backend = platform::backend()?;
+            let report = backend.list_displays().context("list displays (for config)")?;
+            let cfg = config::load_optional()?;
+            let resolved = config::resolve(cfg.as_ref(), &report.displays, display.as_deref());
             let value = backend
-                .get_input(&display)
-                .with_context(|| format!("get input on display '{display}'"))?;
+                .get_input(&resolved.display_selector)
+                .with_context(|| format!("get input on display '{}'", resolved.display_selector))?;
             println!("{value}");
         }
         Command::Doctor => {
@@ -79,6 +96,11 @@ fn main() -> Result<()> {
                 bail!(notes.message);
             }
             println!("{}", notes.message);
+        }
+        Command::ConfigPath => {
+            if let Some(path) = config::resolve_config_path() {
+                println!("{}", path.display());
+            }
         }
     }
 

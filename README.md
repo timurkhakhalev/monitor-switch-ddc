@@ -68,3 +68,25 @@ monitorctl.exe doctor
 monitorctl.exe list
 monitorctl.exe set-input --display 1 15
 ```
+
+### Config (optional)
+
+`monitorctl` can also map friendly preset names (like `dp1`, `usb_c`) to raw VCP `0x60` values.
+
+- See the path it will use: `monitorctl.exe config-path`
+- Create a JSON file at that path, e.g.:
+
+```json
+{
+  "default_display": "name:XG27ACS",
+  "inputs": { "dp1": 15, "usb_c": 26 }
+}
+```
+
+Then you can run:
+
+```powershell
+monitorctl.exe set-input dp1
+monitorctl.exe set-input usb_c
+monitorctl.exe get-input
+```

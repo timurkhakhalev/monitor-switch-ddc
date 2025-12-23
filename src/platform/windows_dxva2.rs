@@ -5,17 +5,19 @@ use super::{DisplayInfo, DisplayListReport, DoctorReport};
 #[cfg(target_os = "windows")]
 mod win {
     use windows::{
-        core::PCWSTR,
+        core::Error,
         Win32::{
             Devices::Display::{
                 DestroyPhysicalMonitors, GetNumberOfPhysicalMonitorsFromHMONITOR,
                 GetPhysicalMonitorsFromHMONITOR, GetVCPFeatureAndVCPFeatureReply, SetVCPFeature,
-                MC_VCP_CODE_TYPE, PHYSICAL_MONITOR,
+                MC_VCP_CODE_TYPE,
             },
-            Foundation::{BOOL, LPARAM, RECT},
+            Foundation::{LPARAM, RECT},
             Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR},
         },
     };
+
+    pub use windows::Win32::Devices::Display::PHYSICAL_MONITOR;
 
     pub unsafe fn enum_physical_monitors() -> windows::core::Result<Vec<PHYSICAL_MONITOR>> {
         let mut all: Vec<PHYSICAL_MONITOR> = Vec::new();
@@ -25,16 +27,16 @@ mod win {
             _hdc: HDC,
             _rc: *mut RECT,
             lparam: LPARAM,
-        ) -> BOOL {
+        ) -> windows::core::BOOL {
             let vec_ptr = lparam.0 as *mut Vec<PHYSICAL_MONITOR>;
             let vec = unsafe { &mut *vec_ptr };
 
             let mut count: u32 = 0;
             if unsafe { GetNumberOfPhysicalMonitorsFromHMONITOR(hmonitor, &mut count) }.is_err() {
-                return BOOL(1);
+                return windows::core::BOOL(1);
             }
             if count == 0 {
-                return BOOL(1);
+                return windows::core::BOOL(1);
             }
 
             let mut monitors = vec![PHYSICAL_MONITOR::default(); count as usize];
@@ -42,11 +44,15 @@ mod win {
                 vec.extend(monitors);
             }
 
-            BOOL(1)
+            windows::core::BOOL(1)
         }
 
-        let mut ptr = &mut all as *mut Vec<PHYSICAL_MONITOR>;
-        unsafe { EnumDisplayMonitors(HDC(0), None, Some(cb), LPARAM(&mut ptr as *mut _ as isize)) }?;
+        let vec_ptr = &mut all as *mut Vec<PHYSICAL_MONITOR>;
+        let ok =
+            unsafe { EnumDisplayMonitors(None, None, Some(cb), LPARAM(vec_ptr as isize)) };
+        if !ok.as_bool() {
+            return Err(Error::from_thread());
+        }
         Ok(all)
     }
 
@@ -59,32 +65,40 @@ mod win {
         String::from_utf16_lossy(&w[..nul])
     }
 
-    pub fn to_pcwstr(s: &str) -> Vec<u16> {
-        let mut v: Vec<u16> = s.encode_utf16().collect();
-        v.push(0);
-        v
-    }
-
     pub fn set_vcp(mon: &PHYSICAL_MONITOR, code: u8, value: u32) -> windows::core::Result<()> {
-        unsafe { SetVCPFeature(mon.hPhysicalMonitor, code, value) }
+        let ok = unsafe { SetVCPFeature(mon.hPhysicalMonitor, code, value) };
+        if ok == 0 {
+            return Err(Error::from_thread());
+        }
+        Ok(())
     }
 
     pub fn get_vcp(mon: &PHYSICAL_MONITOR, code: u8) -> windows::core::Result<(u32, u32)> {
         let mut vcp_type = MC_VCP_CODE_TYPE(0);
         let mut current: u32 = 0;
         let mut maximum: u32 = 0;
-        unsafe { GetVCPFeatureAndVCPFeatureReply(mon.hPhysicalMonitor, code, Some(&mut vcp_type), &mut current, &mut maximum) }?;
+        let ok = unsafe {
+            GetVCPFeatureAndVCPFeatureReply(
+                mon.hPhysicalMonitor,
+                code,
+                Some(&mut vcp_type),
+                &mut current,
+                Some(&mut maximum),
+            )
+        };
+        if ok == 0 {
+            return Err(Error::from_thread());
+        }
         Ok((current, maximum))
     }
 
     pub fn monitor_desc(mon: &PHYSICAL_MONITOR) -> String {
-        // szPhysicalMonitorDescription is [u16; 128]
-        wide_to_string(&mon.szPhysicalMonitorDescription)
+        // szPhysicalMonitorDescription is [u16; 128] on a packed struct.
+        let desc: [u16; 128] = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!(mon.szPhysicalMonitorDescription)) };
+        wide_to_string(&desc)
     }
 
-    pub fn pcwstr_from_utf16(buf: &Vec<u16>) -> PCWSTR {
-        PCWSTR(buf.as_ptr())
-    }
+
 }
 
 pub struct WindowsDxva2Backend;
@@ -143,29 +157,13 @@ impl super::Backend for WindowsDxva2Backend {
 
         #[cfg(target_os = "windows")]
         unsafe {
-            let idx: usize = display_selector
-                .parse::<usize>()
-                .context("display selector must be a 1-based integer on Windows")?;
-            if idx == 0 {
-                bail!("display selector must be >= 1");
-            }
-
             let mut mons = win::enum_physical_monitors().context("enumerating physical monitors")?;
             if mons.is_empty() {
                 bail!("No physical monitors found via Dxva2.");
             }
-            if idx > mons.len() {
-                let names = mons
-                    .iter()
-                    .enumerate()
-                    .map(|(i, m)| format!("[{}] {}", i + 1, win::monitor_desc(m)))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                win::destroy(&mut mons);
-                bail!("Display {idx} out of range. Available:\n{names}");
-            }
 
-            let mon = &mons[idx - 1];
+            let idx = resolve_selector(display_selector, &mons)?;
+            let mon = &mons[idx];
             win::set_vcp(mon, 0x60, value as u32).context("SetVCPFeature(VCP=0x60)")?;
             win::destroy(&mut mons);
             Ok(())
@@ -181,29 +179,13 @@ impl super::Backend for WindowsDxva2Backend {
 
         #[cfg(target_os = "windows")]
         unsafe {
-            let idx: usize = display_selector
-                .parse::<usize>()
-                .context("display selector must be a 1-based integer on Windows")?;
-            if idx == 0 {
-                bail!("display selector must be >= 1");
-            }
-
             let mut mons = win::enum_physical_monitors().context("enumerating physical monitors")?;
             if mons.is_empty() {
                 bail!("No physical monitors found via Dxva2.");
             }
-            if idx > mons.len() {
-                let names = mons
-                    .iter()
-                    .enumerate()
-                    .map(|(i, m)| format!("[{}] {}", i + 1, win::monitor_desc(m)))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                win::destroy(&mut mons);
-                bail!("Display {idx} out of range. Available:\n{names}");
-            }
 
-            let mon = &mons[idx - 1];
+            let idx = resolve_selector(display_selector, &mons)?;
+            let mon = &mons[idx];
             let (cur, _max) = win::get_vcp(mon, 0x60).context("GetVCPFeatureAndVCPFeatureReply(VCP=0x60)")?;
             win::destroy(&mut mons);
 
@@ -253,4 +235,73 @@ impl super::Backend for WindowsDxva2Backend {
             })
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_selector(display_selector: &str, mons: &[win::PHYSICAL_MONITOR]) -> Result<usize> {
+    if let Ok(idx_1based) = display_selector.parse::<usize>() {
+        if idx_1based == 0 {
+            bail!("display selector must be >= 1");
+        }
+        if idx_1based > mons.len() {
+            bail!(
+                "Display {idx_1based} out of range. Available:\n{}",
+                format_monitor_list(mons)
+            );
+        }
+        return Ok(idx_1based - 1);
+    }
+
+    if let Some(needle) = display_selector.strip_prefix("name:") {
+        let needle = needle.trim();
+        if needle.is_empty() {
+            bail!("display selector 'name:' requires a non-empty substring");
+        }
+        let needle_lc = needle.to_ascii_lowercase();
+
+        let mut matches = mons
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| {
+                let desc = win::monitor_desc(m);
+                if desc.to_ascii_lowercase().contains(&needle_lc) {
+                    Some((i, desc))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if matches.is_empty() {
+            bail!(
+                "No monitors matched selector '{display_selector}'. Available:\n{}",
+                format_monitor_list(mons)
+            );
+        }
+        if matches.len() > 1 {
+            matches.sort_by(|a, b| a.0.cmp(&b.0));
+            let list = matches
+                .iter()
+                .map(|(i, d)| format!("[{}] {}", i + 1, d))
+                .collect::<Vec<_>>()
+                .join("\n");
+            bail!(
+                "Selector '{display_selector}' is ambiguous. Matches:\n{list}\n\nUse `--display <index>` from `list`, or a more specific `name:<substring>`."
+            );
+        }
+        return Ok(matches[0].0);
+    }
+
+    bail!(
+        "Invalid display selector '{display_selector}'. Expected a 1-based index (e.g. '1') or `name:<substring>`."
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn format_monitor_list(mons: &[win::PHYSICAL_MONITOR]) -> String {
+    mons.iter()
+        .enumerate()
+        .map(|(i, m)| format!("[{}] {}", i + 1, win::monitor_desc(m)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
