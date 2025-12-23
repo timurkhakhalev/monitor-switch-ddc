@@ -1,8 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
-mod config;
-mod platform;
+use monitorctl::{config, platform};
 
 #[derive(Parser, Debug)]
 #[command(name = "monitorctl", version, about = "DDC/CI monitor input switcher (PoC)")]

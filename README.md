@@ -69,6 +69,31 @@ monitorctl.exe list
 monitorctl.exe set-input --display 1 15
 ```
 
+## Windows tray app (PoC)
+
+Build + run:
+
+```powershell
+cargo build --bin monitortray
+.\target\debug\monitortray.exe
+```
+
+Click the tray icon (left or right click) to pick an input preset.
+
+### Tray config (recommended)
+
+- Show config path: `monitorctl.exe config-path`
+- Create JSON config at that path, e.g.:
+
+```json
+{
+  "default_display": "name:XG27ACS",
+  "inputs": { "dp1": 15, "usb_c": 26 }
+}
+```
+
+Then `monitortray` shows `dp1` / `usb_c` in the menu (and you can add more presets).
+
 ### Config (optional)
 
 `monitorctl` can also map friendly preset names (like `dp1`, `usb_c`) to raw VCP `0x60` values.

@@ -17,6 +17,7 @@
   - `set-input` accepts either a number or a preset name (e.g. `dp1`)
   - `get-input` / `set-input` can use a configured `default_display`
 - Windows display selector now supports `--display name:<substring>` (matches monitor description)
+- Added Windows tray PoC: `monitortray` (click tray icon to choose an input preset)
 - Documented macOS build workaround for `:` in the repo folder name (use `CARGO_TARGET_DIR=/tmp/monitorctl-target`).
 
 ## How to run (quick)
