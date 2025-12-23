@@ -107,6 +107,10 @@ impl super::Backend for M1DdcBackend {
         Ok(())
     }
 
+    fn get_input(&self, _display_selector: &str) -> Result<u16> {
+        bail!("get-input is not implemented for the macOS m1ddc backend (m1ddc does not reliably expose raw VCP 0x60 reads).");
+    }
+
     fn doctor(&self) -> Result<DoctorReport> {
         let mut messages = Vec::new();
 
@@ -146,4 +150,3 @@ impl super::Backend for M1DdcBackend {
         }
     }
 }
-

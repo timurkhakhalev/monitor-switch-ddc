@@ -18,6 +18,12 @@ enum Command {
         #[arg(long)]
         raw: bool,
     },
+    /// Reads the current input source as raw VCP 0x60 value (Windows only in this PoC).
+    GetInput {
+        /// Display selector. On Windows this is a 1-based monitor index from `list`.
+        #[arg(long, default_value = "1")]
+        display: String,
+    },
     /// Sets input source to a raw VCP 0x60 value (e.g., 26 for USB-C on XG27ACS).
     SetInput {
         /// Display selector. On macOS this is passed through to `m1ddc display <selector> ...`.
@@ -59,6 +65,13 @@ fn main() -> Result<()> {
                 .with_context(|| format!("set input to {value} on display '{display}'"))?;
             println!("{value}");
         }
+        Command::GetInput { display } => {
+            let backend = platform::backend()?;
+            let value = backend
+                .get_input(&display)
+                .with_context(|| format!("get input on display '{display}'"))?;
+            println!("{value}");
+        }
         Command::Doctor => {
             let backend = platform::backend()?;
             let notes = backend.doctor().context("doctor")?;
@@ -71,4 +84,3 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-

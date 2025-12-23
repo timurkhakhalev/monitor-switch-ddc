@@ -34,7 +34,7 @@ For this monitor we already know:
 
 We still need to learn:
 
-- DisplayPort1 input value: `dp1_value`
+- DisplayPort1 input value: likely `15` (common MCCS DP1 value; validated via `monitorctl set-input 15` on macOS)
 - HDMI1 input value (optional): `hdmi1_value`
 
 ## Cross-platform approach
@@ -147,4 +147,3 @@ Once values are known, the tray actions are just “Set VCP `0x60` to <value>”
    - Windows tray app calls `set-input dp1_value`
 4) Packaging:
    - Per-OS release builds, simple autostart instructions
-
