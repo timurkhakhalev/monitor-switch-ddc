@@ -39,7 +39,7 @@ impl M1DdcBackend {
                 stderr.trim()
             );
         }
-        Ok(String::from_utf8(out.stdout).context("m1ddc output was not UTF-8")?)
+        String::from_utf8(out.stdout).context("m1ddc output was not UTF-8")
     }
 }
 

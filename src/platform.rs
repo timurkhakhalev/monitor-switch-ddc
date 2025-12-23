@@ -34,17 +34,17 @@ mod windows_dxva2;
 pub fn backend() -> Result<Box<dyn Backend>> {
     #[cfg(target_os = "macos")]
     {
-        return Ok(Box::new(macos_m1ddc::M1DdcBackend::new()));
+        Ok(Box::new(macos_m1ddc::M1DdcBackend::new()))
     }
 
     #[cfg(target_os = "windows")]
     {
-        return Ok(Box::new(windows_dxva2::WindowsDxva2Backend::new()));
+        Ok(Box::new(windows_dxva2::WindowsDxva2Backend::new()))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         use anyhow::bail;
-        bail!("Unsupported OS (this PoC supports macOS and Windows).");
+        bail!("Unsupported OS (supported: macOS and Windows).");
     }
 }

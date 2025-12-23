@@ -1,6 +1,11 @@
-# monitorctl (PoC)
+# monitorctl
 
-Minimal macOS-first proof-of-concept for switching a monitor input via DDC/CI.
+Monitor input switcher via DDC/CI (VESA MCCS) for macOS and Windows.
+
+This repo contains:
+
+- `monitorctl`: CLI to list displays and set input (VCP `0x60`)
+- `monitortray`: tray/menu-bar app that exposes configured input presets
 
 ## Prereqs (macOS)
 
@@ -40,7 +45,7 @@ Diagnostics:
 cargo run -- doctor
 ```
 
-Read current raw input value (Windows only in this PoC):
+Read current raw input value (Windows-only at the moment):
 
 ```powershell
 monitorctl.exe get-input --display 1
@@ -48,10 +53,10 @@ monitorctl.exe get-input --display 1
 
 ## Notes
 
-- This PoC uses `m1ddc` on macOS, which can **set** input but does not reliably **read** the current raw VCP `0x60` value.
-- Cargo build artifacts are redirected via `.cargo/config.toml` to `/tmp/monitorctl-target` because the workspace folder name contains `:` (which breaks default macOS runtime linker path handling).
+- On macOS this currently uses `m1ddc`, which can **set** input but does not reliably **read** the current raw VCP `0x60` value on all monitors.
+- DDC/CI commonly works only over the currently active video link; once you switch away, the initiating machine may lose the control channel.
 
-## Windows (PoC)
+## Windows
 
 On Windows, `monitorctl` uses the Dxva2 High-Level Monitor Configuration API (DDC/CI wrapper).
 
@@ -69,7 +74,7 @@ monitorctl.exe list
 monitorctl.exe set-input --display 1 15
 ```
 
-## Windows tray app (PoC)
+## Windows tray app
 
 Build + run:
 
@@ -82,7 +87,7 @@ Click the tray icon (left or right click) to pick an input preset.
 
 ### Tray config (recommended)
 
-- Show config path: `monitorctl.exe config-path`
+- Show config path: `monitorctl config-path`
 - Create JSON config at that path, e.g.:
 
 ```json
@@ -102,7 +107,7 @@ Then `monitortray` shows `dp1` / `usb_c` in the menu (and you can add more prese
 - Open config folder: opens the config directory.
 - Reload config: re-reads the config and rebuilds the tray menu.
 
-## macOS tray app (PoC)
+## macOS tray app
 
 Build + run:
 
@@ -115,7 +120,7 @@ The app shows a menu bar item called `monitorctl`; click it to pick an input pre
 
 `monitortray` menu actions:
 
-- Start at login: toggles a per-user LaunchAgent (`~/Library/LaunchAgents/com.monitorctl.monitorctl.plist`) and updates `start_with_windows` in the config (same key used cross-platform in this PoC).
+- Start at login: toggles a per-user LaunchAgent (`~/Library/LaunchAgents/com.monitorctl.monitorctl.plist`) and updates `start_with_windows` in the config.
 - Edit config: opens the config file in your default editor (creates a minimal config file if missing).
 - Open config folder: opens the config directory.
 - Reload config: re-reads the config and rebuilds the tray menu.
@@ -131,7 +136,7 @@ open "dist/monitorctl.app"
 
 `monitorctl` can also map friendly preset names (like `dp1`, `usb_c`) to raw VCP `0x60` values.
 
-- See the path it will use: `monitorctl.exe config-path`
+- See the path it will use: `monitorctl config-path`
 - Create a JSON file at that path, e.g.:
 
 ```json
@@ -148,3 +153,11 @@ monitorctl.exe set-input dp1
 monitorctl.exe set-input usb_c
 monitorctl.exe get-input
 ```
+
+## Contributing
+
+See `CONTRIBUTING.md`.
+
+## License
+
+MIT OR Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`.

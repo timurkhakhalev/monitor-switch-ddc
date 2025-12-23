@@ -48,8 +48,7 @@ mod win {
         }
 
         let vec_ptr = &mut all as *mut Vec<PHYSICAL_MONITOR>;
-        let ok =
-            unsafe { EnumDisplayMonitors(None, None, Some(cb), LPARAM(vec_ptr as isize)) };
+        let ok = unsafe { EnumDisplayMonitors(None, None, Some(cb), LPARAM(vec_ptr as isize)) };
         if !ok.as_bool() {
             return Err(Error::from_thread());
         }
@@ -94,11 +93,11 @@ mod win {
 
     pub fn monitor_desc(mon: &PHYSICAL_MONITOR) -> String {
         // szPhysicalMonitorDescription is [u16; 128] on a packed struct.
-        let desc: [u16; 128] = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!(mon.szPhysicalMonitorDescription)) };
+        let desc: [u16; 128] = unsafe {
+            std::ptr::read_unaligned(std::ptr::addr_of!(mon.szPhysicalMonitorDescription))
+        };
         wide_to_string(&desc)
     }
-
-
 }
 
 pub struct WindowsDxva2Backend;
@@ -118,7 +117,8 @@ impl super::Backend for WindowsDxva2Backend {
 
         #[cfg(target_os = "windows")]
         unsafe {
-            let mut mons = win::enum_physical_monitors().context("enumerating physical monitors")?;
+            let mut mons =
+                win::enum_physical_monitors().context("enumerating physical monitors")?;
             if mons.is_empty() {
                 return Err(anyhow!("No physical monitors found via Dxva2."));
             }
@@ -157,7 +157,8 @@ impl super::Backend for WindowsDxva2Backend {
 
         #[cfg(target_os = "windows")]
         unsafe {
-            let mut mons = win::enum_physical_monitors().context("enumerating physical monitors")?;
+            let mut mons =
+                win::enum_physical_monitors().context("enumerating physical monitors")?;
             if mons.is_empty() {
                 bail!("No physical monitors found via Dxva2.");
             }
@@ -179,14 +180,16 @@ impl super::Backend for WindowsDxva2Backend {
 
         #[cfg(target_os = "windows")]
         unsafe {
-            let mut mons = win::enum_physical_monitors().context("enumerating physical monitors")?;
+            let mut mons =
+                win::enum_physical_monitors().context("enumerating physical monitors")?;
             if mons.is_empty() {
                 bail!("No physical monitors found via Dxva2.");
             }
 
             let idx = resolve_selector(display_selector, &mons)?;
             let mon = &mons[idx];
-            let (cur, _max) = win::get_vcp(mon, 0x60).context("GetVCPFeatureAndVCPFeatureReply(VCP=0x60)")?;
+            let (cur, _max) =
+                win::get_vcp(mon, 0x60).context("GetVCPFeatureAndVCPFeatureReply(VCP=0x60)")?;
             win::destroy(&mut mons);
 
             Ok(u16::try_from(cur).unwrap_or(u16::MAX))

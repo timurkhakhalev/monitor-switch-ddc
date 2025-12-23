@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use monitorctl::{config, platform};
 
 #[derive(Parser, Debug)]
-#[command(name = "monitorctl", version, about = "DDC/CI monitor input switcher (PoC)")]
+#[command(name = "monitorctl", version, about = "DDC/CI monitor input switcher")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -18,7 +18,7 @@ enum Command {
         #[arg(long)]
         raw: bool,
     },
-    /// Reads the current input source as raw VCP 0x60 value (Windows only in this PoC).
+    /// Reads the current input source as raw VCP 0x60 value (Windows-only at the moment).
     GetInput {
         /// Display selector. On Windows this is a 1-based monitor index from `list`.
         /// If omitted, `monitorctl.json` / config defaults may be used.
@@ -64,7 +64,9 @@ fn main() -> Result<()> {
         }
         Command::SetInput { display, value } => {
             let backend = platform::backend()?;
-            let report = backend.list_displays().context("list displays (for config)")?;
+            let report = backend
+                .list_displays()
+                .context("list displays (for config)")?;
             let cfg = config::load_optional()?;
             let resolved = config::resolve(cfg.as_ref(), &report.displays, display.as_deref());
             let value = config::parse_input_value(&value, &resolved)?;
@@ -80,7 +82,9 @@ fn main() -> Result<()> {
         }
         Command::GetInput { display } => {
             let backend = platform::backend()?;
-            let report = backend.list_displays().context("list displays (for config)")?;
+            let report = backend
+                .list_displays()
+                .context("list displays (for config)")?;
             let cfg = config::load_optional()?;
             let resolved = config::resolve(cfg.as_ref(), &report.displays, display.as_deref());
             let value = backend

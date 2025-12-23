@@ -2,6 +2,10 @@
 name = "monitorctl"
 version = "0.1.0"
 edition = "2021"
+description = "DDC/CI monitor input switcher (CLI + tray) for macOS and Windows"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/timurkhakhalev/monitor-switch-ddc"
 
 [features]
 # Some upstream macros still reference `cfg(feature = "cargo-clippy")`. Defining

@@ -19,11 +19,7 @@ fn main() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 mod windows_tray {
-    use std::{
-        collections::BTreeMap,
-        mem::size_of,
-        path::Path,
-    };
+    use std::{collections::BTreeMap, mem::size_of, path::Path};
 
     use anyhow::{anyhow, Context, Result};
     use monitorctl::{config, platform, platform::Backend};
@@ -31,30 +27,28 @@ mod windows_tray {
         core::{w, Error as WinError, PCWSTR},
         Win32::{
             Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
+            Graphics::Gdi::{
+                CreateBitmap, CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+                DIB_RGB_COLORS, HBITMAP,
+            },
             System::LibraryLoader::GetModuleHandleW,
             System::Registry::{
                 RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ,
                 RRF_RT_REG_SZ,
             },
-            Graphics::Gdi::{
-                CreateBitmap, CreateDIBSection, DeleteObject, BI_RGB, BITMAPINFO, BITMAPINFOHEADER,
-                DIB_RGB_COLORS, HBITMAP,
-            },
             UI::{
                 Shell::{
-                    ShellExecuteW,
-                    Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
-                    NIM_DELETE, NIM_MODIFY, NOTIFY_ICON_MESSAGE,
+                    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
+                    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFY_ICON_MESSAGE,
                 },
                 WindowsAndMessaging::{
-                    AppendMenuW, CreatePopupMenu, DefWindowProcW, DestroyMenu,
+                    AppendMenuW, CreateIconIndirect, CreatePopupMenu, DefWindowProcW, DestroyMenu,
                     DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW, PostQuitMessage,
                     RegisterClassW, SetForegroundWindow, TrackPopupMenu, TranslateMessage,
-                    CREATESTRUCTW, HMENU, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN,
-                    TPM_LEFTALIGN, TPM_RETURNCMD, MF_DISABLED, MF_GRAYED, CreateIconIndirect,
-                    ICONINFO, MF_CHECKED, MF_UNCHECKED, SW_SHOWNORMAL,
-                    TPM_RIGHTBUTTON, WM_LBUTTONUP, WM_NCCREATE, WM_RBUTTONUP, WM_USER, WNDCLASSW,
-                    WS_OVERLAPPED,
+                    CREATESTRUCTW, HMENU, ICONINFO, MF_CHECKED, MF_DISABLED, MF_GRAYED,
+                    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG, SW_SHOWNORMAL, TPM_BOTTOMALIGN,
+                    TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_LBUTTONUP, WM_NCCREATE,
+                    WM_RBUTTONUP, WM_USER, WNDCLASSW, WS_OVERLAPPED,
                 },
             },
         },
@@ -71,8 +65,7 @@ mod windows_tray {
 
     pub fn run() -> Result<()> {
         unsafe {
-            let hinstance =
-                HINSTANCE(GetModuleHandleW(None).context("GetModuleHandleW")?.0);
+            let hinstance = HINSTANCE(GetModuleHandleW(None).context("GetModuleHandleW")?.0);
 
             let class_name = w!("monitortray.hidden-window");
             let wc = WNDCLASSW {
@@ -150,7 +143,8 @@ mod windows_tray {
         }
 
         fn hwnd(&self) -> Result<HWND> {
-            self.hwnd.ok_or_else(|| anyhow!("internal error: hwnd not set yet"))
+            self.hwnd
+                .ok_or_else(|| anyhow!("internal error: hwnd not set yet"))
         }
 
         fn rebuild_menu(&mut self) -> Result<()> {
@@ -164,13 +158,8 @@ mod windows_tray {
 
             // Section header
             unsafe {
-                AppendMenuW(
-                    menu,
-                    MF_STRING | MF_DISABLED | MF_GRAYED,
-                    0,
-                    w!("Inputs"),
-                )
-                .context("AppendMenuW(header:inputs)")?;
+                AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, w!("Inputs"))
+                    .context("AppendMenuW(header:inputs)")?;
             }
 
             for (cmd, (name, value)) in &self.inputs {
@@ -191,13 +180,8 @@ mod windows_tray {
                 .context("AppendMenuW(separator)")?;
 
             unsafe {
-                AppendMenuW(
-                    menu,
-                    MF_STRING | MF_DISABLED | MF_GRAYED,
-                    0,
-                    w!("Actions"),
-                )
-                .context("AppendMenuW(header:actions)")?;
+                AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, w!("Actions"))
+                    .context("AppendMenuW(header:actions)")?;
             }
             unsafe {
                 let flags = MF_STRING
@@ -206,8 +190,13 @@ mod windows_tray {
                     } else {
                         MF_UNCHECKED
                     };
-                AppendMenuW(menu, flags, CMD_TOGGLE_STARTUP as usize, w!("Start with Windows"))
-                    .context("AppendMenuW(startup)")?;
+                AppendMenuW(
+                    menu,
+                    flags,
+                    CMD_TOGGLE_STARTUP as usize,
+                    w!("Start with Windows"),
+                )
+                .context("AppendMenuW(startup)")?;
                 AppendMenuW(menu, MF_STRING, CMD_EDIT_CONFIG as usize, w!("Edit config"))
                     .context("AppendMenuW(edit config)")?;
                 AppendMenuW(
@@ -677,15 +666,8 @@ mod windows_tray {
             };
 
             let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-            let color: HBITMAP = CreateDIBSection(
-                None,
-                &bmi,
-                DIB_RGB_COLORS,
-                &mut bits,
-                None,
-                0,
-            )
-            .context("CreateDIBSection")?;
+            let color: HBITMAP = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+                .context("CreateDIBSection")?;
 
             if bits.is_null() {
                 return Err(anyhow!("CreateDIBSection returned null bits"));
@@ -764,19 +746,17 @@ mod macos_tray {
 
     use anyhow::{anyhow, Context, Result};
     use cocoa::{
-        appkit::{
-            NSApp, NSApplication, NSApplicationActivationPolicyAccessory, NSStatusBar,
-        },
+        appkit::{NSApp, NSApplication, NSApplicationActivationPolicyAccessory, NSStatusBar},
         base::{id, nil},
-        foundation::{
-            NSAutoreleasePool, NSInteger, NSString,
-        },
+        foundation::{NSAutoreleasePool, NSInteger, NSString},
     };
     use monitorctl::{config, platform, platform::Backend};
     use objc::{
+        class,
         declare::ClassDecl,
+        msg_send,
         runtime::{Class, Object, Sel},
-        class, msg_send, sel, sel_impl,
+        sel, sel_impl,
     };
 
     const CMD_BASE_INPUT: u16 = 2000;
@@ -807,7 +787,9 @@ mod macos_tray {
             let state_ptr: *mut State = &mut *state;
 
             let target = new_target(state_ptr);
-            state.install_status_item(target).context("install status item")?;
+            state
+                .install_status_item(target)
+                .context("install status item")?;
 
             app.run();
             drop(state);
@@ -880,7 +862,8 @@ mod macos_tray {
 
         fn install_status_item(&mut self, target: id) -> Result<()> {
             unsafe {
-                let status_item: id = msg_send![NSStatusBar::systemStatusBar(nil), statusItemWithLength: -1.0];
+                let status_item: id =
+                    msg_send![NSStatusBar::systemStatusBar(nil), statusItemWithLength: -1.0];
                 let button: id = msg_send![status_item, button];
                 let title = nsstring(APP_NAME);
                 let _: () = msg_send![button, setTitle: title];
@@ -903,7 +886,14 @@ mod macos_tray {
 
                 for (cmd, (name, value)) in &self.inputs {
                     let label = format!("{} ({value})", pretty_input_label(name));
-                    add_action_item(menu, &label, sel!(onMenuItem:), target, *cmd as NSInteger, None);
+                    add_action_item(
+                        menu,
+                        &label,
+                        sel!(onMenuItem:),
+                        target,
+                        *cmd as NSInteger,
+                        None,
+                    );
                 }
 
                 let sep: id = msg_send![class!(NSMenuItem), separatorItem];
@@ -989,7 +979,8 @@ mod macos_tray {
                     Ok(())
                 }
                 CMD_TOGGLE_STARTUP => {
-                    self.toggle_start_at_login(target).context("toggle startup")?;
+                    self.toggle_start_at_login(target)
+                        .context("toggle startup")?;
                     Ok(())
                 }
                 CMD_EDIT_CONFIG => self.edit_config().context("edit config"),
@@ -1056,7 +1047,12 @@ mod macos_tray {
 
     fn load_display_and_inputs(
         backend: &dyn Backend,
-    ) -> (String, BTreeMap<u16, (String, u16)>, Option<bool>, Option<String>) {
+    ) -> (
+        String,
+        BTreeMap<u16, (String, u16)>,
+        Option<bool>,
+        Option<String>,
+    ) {
         let cfg = match config::load_optional() {
             Ok(v) => v,
             Err(e) => return ("1".to_string(), default_inputs(), None, Some(e.to_string())),
@@ -1079,7 +1075,9 @@ mod macos_tray {
         )
     }
 
-    fn build_inputs(inputs: &std::collections::HashMap<String, u16>) -> BTreeMap<u16, (String, u16)> {
+    fn build_inputs(
+        inputs: &std::collections::HashMap<String, u16>,
+    ) -> BTreeMap<u16, (String, u16)> {
         if inputs.is_empty() {
             return default_inputs();
         }
@@ -1176,7 +1174,11 @@ mod macos_tray {
         let _: () = msg_send![item, setTag: tag];
 
         if let Some(checked) = checked {
-            let state = if checked { MENU_STATE_ON } else { MENU_STATE_OFF };
+            let state = if checked {
+                MENU_STATE_ON
+            } else {
+                MENU_STATE_OFF
+            };
             let _: () = msg_send![item, setState: state];
         }
 

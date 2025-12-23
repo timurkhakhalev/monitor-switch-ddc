@@ -1,10 +1,4 @@
-use std::{
-    collections::HashMap,
-    env,
-    fs,
-    path::Path,
-    path::PathBuf,
-};
+use std::{collections::HashMap, env, fs, path::Path, path::PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -78,11 +72,20 @@ pub fn resolve_config_path() -> Option<PathBuf> {
     }
 
     if let Some(appdata) = env::var_os("APPDATA") {
-        return Some(PathBuf::from(appdata).join("monitorctl").join("config.json"));
+        return Some(
+            PathBuf::from(appdata)
+                .join("monitorctl")
+                .join("config.json"),
+        );
     }
 
     if let Some(home) = env::var_os("HOME") {
-        return Some(PathBuf::from(home).join(".config").join("monitorctl").join("config.json"));
+        return Some(
+            PathBuf::from(home)
+                .join(".config")
+                .join("monitorctl")
+                .join("config.json"),
+        );
     }
 
     None
@@ -130,10 +133,7 @@ pub fn patch_start_with_windows(enabled: bool) -> Result<PathBuf> {
         .as_object_mut()
         .ok_or_else(|| anyhow!("config root must be a JSON object"))?;
 
-    obj.insert(
-        "start_with_windows".to_string(),
-        Value::Bool(enabled),
-    );
+    obj.insert("start_with_windows".to_string(), Value::Bool(enabled));
 
     let mut s = serde_json::to_string_pretty(&root).context("serialize config")?;
     s.push('\n');
@@ -174,7 +174,8 @@ pub fn resolve(
 
     if display_selector.is_none() {
         for mon_cfg in &cfg.monitors {
-            let Some((matched_display, inferred_selector)) = match_display(mon_cfg, displays) else {
+            let Some((matched_display, inferred_selector)) = match_display(mon_cfg, displays)
+            else {
                 continue;
             };
 
