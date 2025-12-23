@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Rust
+/target/
+
+# Tauri / Node (future UI)
+node_modules/
+dist/
+.turbo/
+.next/
+
+# IDE
+.idea/
+.vscode/

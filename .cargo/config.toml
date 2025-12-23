@@ -1,0 +1,5 @@
+[build]
+# This repo’s folder name contains a ':' which breaks Rust’s runtime linker
+# env var handling on macOS when the default `target/` path is used.
+# Keep build artifacts in a colon-free absolute path.
+target-dir = "/tmp/monitorctl-target"
