@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     env,
     ffi::c_void,
     fs::OpenOptions,
@@ -24,15 +23,10 @@ use objc::{
     sel, sel_impl,
 };
 
-use crate::platform::Backend;
-use crate::{config, platform, tray::common};
-
-const CMD_BASE_INPUT: u16 = 2000;
-const CMD_RELOAD: u16 = 5000;
-const CMD_QUIT: u16 = 5001;
-const CMD_TOGGLE_STARTUP: u16 = 5002;
-const CMD_EDIT_CONFIG: u16 = 5003;
-const CMD_OPEN_CONFIG_FOLDER: u16 = 5004;
+use crate::tray::commands::{decode, Command};
+use crate::tray::menu::{MenuItem, MenuSpec};
+use crate::tray::model::{ModelUpdate, TrayModel};
+use crate::tray::startup::StartupManager;
 
 const APP_NAME: &str = "monitorctl";
 
@@ -51,16 +45,25 @@ pub fn run() -> Result<()> {
         let app = NSApp();
         app.setActivationPolicy_(NSApplicationActivationPolicyAccessory);
 
-        let mut state = Box::new(State::new()?);
-        let state_ptr: *mut State = &mut *state;
+        let mut app_state = Box::new(MacApp::new()?);
+        let app_ptr: *mut MacApp = &mut *app_state;
 
-        let target = new_target(state_ptr);
-        state
+        let target = new_target(app_ptr);
+        app_state
+            .ui
             .install_status_item(target)
             .context("install status item")?;
+        app_state.rebuild_menu().context("build menu")?;
+        app_state.refresh_tooltip();
+
+        let update = app_state
+            .model
+            .handle(Command::Reload, &app_state.startup)
+            .context("initial reload")?;
+        app_state.apply_update(update)?;
 
         app.run();
-        drop(state);
+        drop(app_state);
     }
 
     Ok(())
@@ -97,41 +100,13 @@ fn detach_from_terminal() {
     }
 }
 
-struct State {
+struct MacTrayUi {
     status_item: Option<id>,
     menu: Option<id>,
-    // Command id -> (name, raw VCP value).
-    inputs: BTreeMap<u16, (String, u16)>,
-    display_selector: String,
-    start_at_login: bool,
-    backend: Box<dyn Backend>,
-    last_error: Option<String>,
+    target: Option<id>,
 }
 
-impl State {
-    fn new() -> Result<Self> {
-        let backend = platform::backend().context("select backend")?;
-        let (display_selector, inputs, start_at_login_pref, load_error) =
-            load_display_and_inputs(&*backend);
-        let (start_at_login, startup_error) = common::apply_startup_pref(
-            start_at_login_pref,
-            |enabled| autostart::set_enabled(enabled),
-            || autostart::is_enabled(),
-        );
-
-        let last_error = load_error.or(startup_error);
-
-        Ok(Self {
-            status_item: None,
-            menu: None,
-            inputs,
-            display_selector,
-            start_at_login,
-            backend,
-            last_error,
-        })
-    }
-
+impl MacTrayUi {
     fn install_status_item(&mut self, target: id) -> Result<()> {
         unsafe {
             let status_item: id =
@@ -141,78 +116,42 @@ impl State {
             let _: () = msg_send![button, setTitle: title];
 
             self.status_item = Some(status_item);
+            self.target = Some(target);
             self.rebuild_menu(target).context("build menu")?;
-            self.update_tooltip();
+            self.set_tooltip(APP_NAME);
         }
 
         Ok(())
     }
 
-    fn rebuild_menu(&mut self, target: id) -> Result<()> {
+    fn rebuild_menu(&mut self, target: id, spec: &MenuSpec) -> Result<()> {
         unsafe {
             let menu: id = msg_send![class!(NSMenu), alloc];
             let menu: id = msg_send![menu, initWithTitle: nsstring(APP_NAME)];
 
-            // Section header (disabled).
-            add_header(menu, "Inputs");
-
-            for (cmd, (name, value)) in &self.inputs {
-                let label = format!("{} ({value})", common::pretty_input_label(name));
-                add_action_item(
-                    menu,
-                    &label,
-                    sel!(onMenuItem:),
-                    target,
-                    *cmd as NSInteger,
-                    None,
-                );
+            for item in &spec.items {
+                match item {
+                    MenuItem::Header(title) => add_header(menu, title),
+                    MenuItem::Separator => {
+                        let sep: id = msg_send![class!(NSMenuItem), separatorItem];
+                        let _: () = msg_send![menu, addItem: sep];
+                    }
+                    MenuItem::Action {
+                        id,
+                        title,
+                        checked,
+                        enabled,
+                    } => add_action_item(
+                        menu,
+                        title,
+                        sel!(onMenuItem:),
+                        target,
+                        *id as NSInteger,
+                        Some(*checked),
+                        *enabled,
+                    ),
+                }
             }
-
-            let sep: id = msg_send![class!(NSMenuItem), separatorItem];
-            let _: () = msg_send![menu, addItem: sep];
-
-            add_header(menu, "Actions");
-
-            add_action_item(
-                menu,
-                "Start at login",
-                sel!(onMenuItem:),
-                target,
-                CMD_TOGGLE_STARTUP as NSInteger,
-                Some(self.start_at_login),
-            );
-            add_action_item(
-                menu,
-                "Edit config",
-                sel!(onMenuItem:),
-                target,
-                CMD_EDIT_CONFIG as NSInteger,
-                None,
-            );
-            add_action_item(
-                menu,
-                "Open config folder",
-                sel!(onMenuItem:),
-                target,
-                CMD_OPEN_CONFIG_FOLDER as NSInteger,
-                None,
-            );
-            add_action_item(
-                menu,
-                "Reload config",
-                sel!(onMenuItem:),
-                target,
-                CMD_RELOAD as NSInteger,
-                None,
-            );
-            add_action_item(
-                menu,
-                "Quit",
-                sel!(onMenuItem:),
-                target,
-                CMD_QUIT as NSInteger,
-                None,
-            );
 
             if let Some(status_item) = self.status_item {
                 let _: () = msg_send![status_item, setMenu: menu];
@@ -223,150 +162,98 @@ impl State {
         Ok(())
     }
 
-    fn update_tooltip(&mut self) {
+    fn set_tooltip(&mut self, text: &str) {
         unsafe {
             let status_item = match self.status_item {
                 Some(s) => s,
                 None => return,
             };
             let button: id = msg_send![status_item, button];
-            let tip = match self.last_error.as_deref() {
-                None => APP_NAME,
-                Some(e) => e,
-            };
-            let tip = nsstring(tip);
+            let tip = nsstring(text);
             let _: () = msg_send![button, setToolTip: tip];
         }
     }
+}
 
-    fn handle_cmd(&mut self, cmd: u16, target: id) -> Result<()> {
-        match cmd {
-            CMD_QUIT => unsafe {
+struct MacStartupManager;
+
+impl StartupManager for MacStartupManager {
+    fn is_enabled(&self) -> Result<bool> {
+        autostart::is_enabled().context("read launch agent")
+    }
+
+    fn set_enabled(&self, enabled: bool) -> Result<()> {
+        autostart::set_enabled(enabled).context("update launch agent")
+    }
+}
+
+struct MacApp {
+    ui: MacTrayUi,
+    model: TrayModel,
+    startup: MacStartupManager,
+}
+
+impl MacApp {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            ui: MacTrayUi {
+                status_item: None,
+                menu: None,
+                target: None,
+            },
+            model: TrayModel::new()?,
+            startup: MacStartupManager,
+        })
+    }
+
+    fn rebuild_menu(&mut self) -> Result<()> {
+        let spec = self.model.menu_spec();
+        let Some(target) = self.ui.target else {
+            return Err(anyhow!("menu target not set"));
+        };
+        self.ui.rebuild_menu(target, &spec)
+    }
+
+    fn refresh_tooltip(&mut self) {
+        let tip = self.model.last_error().unwrap_or(APP_NAME);
+        self.ui.set_tooltip(tip);
+    }
+
+    fn handle_menu_click(&mut self, cmd_id: u16) -> Result<()> {
+        let Some(cmd) = decode(cmd_id, self.model.inputs()) else {
+            return Ok(());
+        };
+
+        let update = self.model.handle(cmd, &self.startup)?;
+        self.apply_update(update)
+    }
+
+    fn apply_update(&mut self, update: ModelUpdate) -> Result<()> {
+        if let Some(path) = update.open_path {
+            if let Err(err) = shell_open(&path) {
+                let update = self.model.note_error(err);
+                self.apply_update(update)?;
+                return Ok(());
+            }
+        }
+
+        if update.refresh_menu {
+            self.rebuild_menu()?;
+        }
+
+        if update.refresh_tooltip {
+            self.refresh_tooltip();
+        }
+
+        if update.quit {
+            unsafe {
                 let app = NSApp();
                 let _: () = msg_send![app, terminate: nil];
-                Ok(())
-            },
-            CMD_RELOAD => {
-                self.reload_config(target).context("reload config")?;
-                Ok(())
-            }
-            CMD_TOGGLE_STARTUP => {
-                self.toggle_start_at_login(target)
-                    .context("toggle startup")?;
-                Ok(())
-            }
-            CMD_EDIT_CONFIG => self.edit_config().context("edit config"),
-            CMD_OPEN_CONFIG_FOLDER => self.open_config_folder().context("open config folder"),
-            _ => {
-                if let Some((_name, value)) = self.inputs.get(&cmd).cloned() {
-                    self.set_input(value).context("set input")?;
-                }
-                Ok(())
             }
         }
-    }
 
-    fn set_input(&mut self, value: u16) -> Result<()> {
-        self.backend
-            .set_input(&self.display_selector, value)
-            .with_context(|| format!("set input {value} on '{}'", self.display_selector))?;
-        self.last_error = None;
-        self.update_tooltip();
         Ok(())
     }
-
-    fn reload_config(&mut self, target: id) -> Result<()> {
-        let (display_selector, inputs, start_at_login_pref, load_error) =
-            load_display_and_inputs(&*self.backend);
-        self.display_selector = display_selector;
-        self.inputs = inputs;
-        let (start_at_login, startup_error) = common::apply_startup_pref(
-            start_at_login_pref,
-            |enabled| autostart::set_enabled(enabled),
-            || autostart::is_enabled(),
-        );
-        self.start_at_login = start_at_login;
-        self.rebuild_menu(target)?;
-        self.last_error = load_error.or(startup_error);
-        self.update_tooltip();
-        Ok(())
-    }
-
-    fn toggle_start_at_login(&mut self, target: id) -> Result<()> {
-        let next = !self.start_at_login;
-        autostart::set_enabled(next).context("update launch agent")?;
-        let _path = config::patch_start_with_windows(next).context("update config")?;
-        self.start_at_login = next;
-        self.rebuild_menu(target)?;
-        self.last_error = None;
-        self.update_tooltip();
-        Ok(())
-    }
-
-    fn edit_config(&mut self) -> Result<()> {
-        let path = config::ensure_config_file_exists().context("ensure config exists")?;
-        shell_open(&path).with_context(|| format!("open {}", path.display()))?;
-        Ok(())
-    }
-
-    fn open_config_folder(&mut self) -> Result<()> {
-        let Some(path) = config::resolve_config_path() else {
-            return Err(anyhow!("No config path available"));
-        };
-        let parent = path
-            .parent()
-            .ok_or_else(|| anyhow!("No parent directory for config path"))?;
-        shell_open(parent).with_context(|| format!("open {}", parent.display()))?;
-        Ok(())
-    }
-}
-
-fn load_display_and_inputs(
-    backend: &dyn Backend,
-) -> (
-    String,
-    BTreeMap<u16, (String, u16)>,
-    Option<bool>,
-    Option<String>,
-) {
-    let cfg = match config::load_optional() {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                "1".to_string(),
-                common::default_inputs(CMD_BASE_INPUT),
-                None,
-                Some(e.to_string()),
-            )
-        }
-    };
-    let start_at_login_pref = cfg.as_ref().and_then(|c| c.start_with_windows);
-
-    let (displays, load_error) = match backend.list_displays() {
-        Ok(report) => (report.displays, None),
-        Err(e) => (Vec::new(), Some(e.to_string())),
-    };
-
-    let resolved = config::resolve(cfg.as_ref(), &displays, None);
-    let inputs = common::build_inputs(&resolved.inputs, CMD_BASE_INPUT);
-
-    (
-        resolved.display_selector,
-        inputs,
-        start_at_login_pref,
-        load_error,
-    )
-}
-
-fn shell_open(path: &Path) -> Result<()> {
-    let status = Command::new("open")
-        .arg(path)
-        .status()
-        .with_context(|| format!("running open {}", path.display()))?;
-    if !status.success() {
-        return Err(anyhow!("open failed (exit={status})"));
-    }
-    Ok(())
 }
 
 unsafe fn nsstring(s: &str) -> id {
@@ -390,6 +277,7 @@ unsafe fn add_action_item(
     target: id,
     tag: NSInteger,
     checked: Option<bool>,
+    enabled: bool,
 ) {
     let item: id = msg_send![class!(NSMenuItem), alloc];
     let title = nsstring(title);
@@ -407,6 +295,7 @@ unsafe fn add_action_item(
         let _: () = msg_send![item, setState: state];
     }
 
+    let _: () = msg_send![item, setEnabled: enabled];
     let _: () = msg_send![menu, addItem: item];
 }
 
@@ -429,7 +318,7 @@ fn target_class() -> *const Class {
     unsafe { CLS }
 }
 
-fn new_target(state_ptr: *mut State) -> id {
+fn new_target(state_ptr: *mut MacApp) -> id {
     unsafe {
         let cls = target_class();
         let obj: id = msg_send![cls, new];
@@ -444,15 +333,15 @@ extern "C" fn on_menu_item(this: &Object, _cmd: Sel, sender: id) {
         if state_ptr.is_null() {
             return;
         }
-        let state = &mut *(state_ptr as *mut State);
+        let app = &mut *(state_ptr as *mut MacApp);
         let tag: NSInteger = msg_send![sender, tag];
         let cmd = tag as u16;
 
-        if let Err(e) = state.handle_cmd(cmd, this as *const _ as id) {
-            let msg = e.to_string();
+        if let Err(err) = app.handle_menu_click(cmd) {
+            let msg = err.to_string();
             log_to_tmp("monitortray error", &msg);
-            state.last_error = Some(msg);
-            state.update_tooltip();
+            let update = app.model.note_error(err);
+            let _ = app.apply_update(update);
         }
     }
 }
@@ -465,6 +354,17 @@ fn log_to_tmp(prefix: &str, msg: &str) {
     {
         let _ = writeln!(f, "{prefix}: {msg}");
     }
+}
+
+fn shell_open(path: &Path) -> Result<()> {
+    let status = Command::new("open")
+        .arg(path)
+        .status()
+        .with_context(|| format!("running open {}", path.display()))?;
+    if !status.success() {
+        return Err(anyhow!("open failed (exit={status})"));
+    }
+    Ok(())
 }
 
 mod autostart {
