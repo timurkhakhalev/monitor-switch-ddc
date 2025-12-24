@@ -36,7 +36,7 @@ pub fn default_inputs(base_cmd: u16) -> BTreeMap<u16, (String, u16)> {
     // Defaults for your XG27ACS setup; override with config for other monitors.
     let mut inputs: BTreeMap<u16, (String, u16)> = BTreeMap::new();
     let mut next_cmd = base_cmd;
-    for (k, v) in [("dp1", 15u16), ("usb_c", 26u16)] {
+    for &(k, v) in crate::config::DEFAULT_INPUTS {
         inputs.insert(next_cmd, (k.to_string(), v));
         next_cmd += 1;
     }
