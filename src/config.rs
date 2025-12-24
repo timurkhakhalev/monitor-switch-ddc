@@ -6,6 +6,8 @@ use serde_json::Value;
 
 use crate::platform::DisplayInfo;
 
+pub const DEFAULT_INPUTS: &[(&str, u16)] = &[("dp1", 15u16), ("usb_c", 26u16)];
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// If set, the Windows tray app will add/remove itself from user startup accordingly.
@@ -44,6 +46,13 @@ pub struct MonitorMatch {
 pub struct ResolvedConfig {
     pub display_selector: String,
     pub inputs: HashMap<String, u16>,
+}
+
+pub fn default_inputs_map() -> HashMap<String, u16> {
+    DEFAULT_INPUTS
+        .iter()
+        .map(|&(k, v)| (k.to_string(), v))
+        .collect()
 }
 
 pub fn load_optional() -> Result<Option<Config>> {
@@ -106,7 +115,7 @@ pub fn ensure_config_file_exists() -> Result<PathBuf> {
     if !path.exists() {
         let template = serde_json::json!({
             "start_with_windows": false,
-            "inputs": {}
+            "inputs": default_inputs_map()
         });
         let mut s = serde_json::to_string_pretty(&template).context("serialize config template")?;
         s.push('\n');

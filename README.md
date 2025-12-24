@@ -103,7 +103,7 @@ Then `monitortray` shows `dp1` / `usb_c` in the menu (and you can add more prese
 `monitortray` menu actions:
 
 - Start with Windows: toggles user startup (HKCU Run key) and updates `start_with_windows` in the config.
-- Edit config: opens the config file in your default editor (creates a minimal config file if missing).
+- Edit config: opens the config file in your default editor (creates a config file if missing).
 - Open config folder: opens the config directory.
 - Reload config: re-reads the config and rebuilds the tray menu.
 
@@ -121,7 +121,7 @@ The app shows a menu bar item called `monitorctl`; click it to pick an input pre
 `monitortray` menu actions:
 
 - Start at login: toggles a per-user LaunchAgent (`~/Library/LaunchAgents/com.monitorctl.monitorctl.plist`) and updates `start_with_windows` in the config.
-- Edit config: opens the config file in your default editor (creates a minimal config file if missing).
+- Edit config: opens the config file in your default editor (creates a config file if missing).
 - Open config folder: opens the config directory.
 - Reload config: re-reads the config and rebuilds the tray menu.
 
