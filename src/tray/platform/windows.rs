@@ -287,7 +287,8 @@ impl WinApp {
 
     fn apply_update(&mut self, update: ModelUpdate) -> Result<()> {
         if let Some(path) = update.open_path {
-            if let Err(err) = shell_open(&path) {
+            if let Err(err) = shell_open(&path).with_context(|| format!("open {}", path.display()))
+            {
                 let update = self.model.note_error(err);
                 self.apply_update(update)?;
                 return Ok(());
