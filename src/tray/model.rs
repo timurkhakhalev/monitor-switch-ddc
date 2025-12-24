@@ -147,7 +147,7 @@ impl TrayModel {
         Ok(update)
     }
 
-    fn note_error(&mut self, err: anyhow::Error) -> ModelUpdate {
+    pub fn note_error(&mut self, err: anyhow::Error) -> ModelUpdate {
         self.last_error = Some(err.to_string());
         ModelUpdate {
             refresh_tooltip: true,

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, mem::size_of, path::Path};
+use std::{mem::size_of, path::Path};
 
 use anyhow::{anyhow, Context, Result};
 use windows::{
@@ -32,17 +32,14 @@ use windows::{
     },
 };
 
-use crate::platform::Backend;
-use crate::{config, platform, tray::common};
+use crate::tray::commands::{decode, Command};
+use crate::tray::menu::{MenuItem, MenuSpec};
+use crate::tray::model::{ModelUpdate, TrayModel};
+use crate::tray::startup::StartupManager;
 
 const WM_TRAYICON: u32 = WM_USER + 1;
 
-const CMD_BASE_INPUT: u16 = 2000;
-const CMD_RELOAD: u16 = 5000;
-const CMD_QUIT: u16 = 5001;
-const CMD_TOGGLE_STARTUP: u16 = 5002;
-const CMD_EDIT_CONFIG: u16 = 5003;
-const CMD_OPEN_CONFIG_FOLDER: u16 = 5004;
+const TOOLTIP_DEFAULT: &str = "monitortray";
 
 pub fn run() -> Result<()> {
     unsafe {
@@ -60,7 +57,7 @@ pub fn run() -> Result<()> {
             return Err(anyhow!("RegisterClassW failed"));
         }
 
-        let mut state = Box::new(State::new()?);
+        let mut app = Box::new(WinApp::new()?);
 
         let hwnd = windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
             Default::default(),
@@ -74,14 +71,23 @@ pub fn run() -> Result<()> {
             None,
             None,
             Some(hinstance),
-            Some(state.as_mut() as *mut _ as *const _),
+            Some(app.as_mut() as *mut _ as *const _),
         )
         .context("CreateWindowExW")?;
 
-        state.hwnd = Some(hwnd);
-        state.install_tray_icon().context("install tray icon")?;
-        // State is now owned by the window (freed on quit).
-        let _ = Box::into_raw(state);
+        app.ui.hwnd = Some(hwnd);
+        app.ui.install_tray_icon().context("install tray icon")?;
+        app.rebuild_menu().context("build menu")?;
+        app.refresh_tooltip();
+
+        let update = app
+            .model
+            .handle(Command::Reload, &app.startup)
+            .context("initial reload")?;
+        app.apply_update(update)?;
+
+        // App is now owned by the window (freed on quit).
+        let _ = Box::into_raw(app);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -92,47 +98,19 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-struct State {
+struct WinTrayUi {
     hwnd: Option<HWND>,
     tray: NOTIFYICONDATAW,
     menu: Option<HMENU>,
-    // Command id -> raw VCP value.
-    inputs: BTreeMap<u16, (String, u16)>,
-    display_selector: String,
-    start_with_windows: bool,
-    backend: Box<dyn Backend>,
-    last_error: Option<String>,
 }
 
-impl State {
-    fn new() -> Result<Self> {
-        let backend = platform::backend().context("select backend")?;
-        let (display_selector, inputs, start_with_windows_pref) =
-            load_display_and_inputs(&*backend)?;
-        let (start_with_windows, startup_error) = common::apply_startup_pref(
-            start_with_windows_pref,
-            |enabled| autostart::set_enabled(enabled),
-            || autostart::is_enabled(),
-        );
-
-        Ok(Self {
-            hwnd: None,
-            tray: NOTIFYICONDATAW::default(),
-            menu: None,
-            inputs,
-            display_selector,
-            start_with_windows,
-            backend,
-            last_error: startup_error,
-        })
-    }
-
+impl WinTrayUi {
     fn hwnd(&self) -> Result<HWND> {
         self.hwnd
             .ok_or_else(|| anyhow!("internal error: hwnd not set yet"))
     }
 
-    fn rebuild_menu(&mut self) -> Result<()> {
+    fn rebuild_menu(&mut self, spec: &MenuSpec) -> Result<()> {
         unsafe {
             if let Some(menu) = self.menu.take() {
                 let _ = DestroyMenu(menu);
@@ -141,60 +119,42 @@ impl State {
 
         let menu = unsafe { CreatePopupMenu() }.context("CreatePopupMenu")?;
 
-        // Section header
-        unsafe {
-            AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, w!("Inputs"))
-                .context("AppendMenuW(header:inputs)")?;
-        }
-
-        for (cmd, (name, value)) in &self.inputs {
-            let label = format!("{} ({value})", common::pretty_input_label(name));
-            let wlabel = wide(&label);
-            unsafe {
-                AppendMenuW(
-                    menu,
-                    MF_STRING,
-                    *cmd as usize,
-                    PCWSTR::from_raw(wlabel.as_ptr()),
-                )
+        for item in &spec.items {
+            match item {
+                MenuItem::Header(title) => unsafe {
+                    let wtitle = wide(title);
+                    AppendMenuW(
+                        menu,
+                        MF_STRING | MF_DISABLED | MF_GRAYED,
+                        0,
+                        PCWSTR::from_raw(wtitle.as_ptr()),
+                    )
+                    .context("AppendMenuW(header)")?;
+                },
+                MenuItem::Separator => unsafe {
+                    AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())
+                        .context("AppendMenuW(separator)")?;
+                },
+                MenuItem::Action {
+                    id,
+                    title,
+                    checked,
+                    enabled,
+                } => unsafe {
+                    let mut flags = MF_STRING;
+                    if *checked {
+                        flags |= MF_CHECKED;
+                    } else {
+                        flags |= MF_UNCHECKED;
+                    }
+                    if !*enabled {
+                        flags |= MF_DISABLED | MF_GRAYED;
+                    }
+                    let wtitle = wide(title);
+                    AppendMenuW(menu, flags, *id as usize, PCWSTR::from_raw(wtitle.as_ptr()))
+                        .context("AppendMenuW(action)")?;
+                },
             }
-            .context("AppendMenuW(input)")?;
-        }
-
-        unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) }
-            .context("AppendMenuW(separator)")?;
-
-        unsafe {
-            AppendMenuW(menu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, w!("Actions"))
-                .context("AppendMenuW(header:actions)")?;
-        }
-        unsafe {
-            let flags = MF_STRING
-                | if self.start_with_windows {
-                    MF_CHECKED
-                } else {
-                    MF_UNCHECKED
-                };
-            AppendMenuW(
-                menu,
-                flags,
-                CMD_TOGGLE_STARTUP as usize,
-                w!("Start with Windows"),
-            )
-            .context("AppendMenuW(startup)")?;
-            AppendMenuW(menu, MF_STRING, CMD_EDIT_CONFIG as usize, w!("Edit config"))
-                .context("AppendMenuW(edit config)")?;
-            AppendMenuW(
-                menu,
-                MF_STRING,
-                CMD_OPEN_CONFIG_FOLDER as usize,
-                w!("Open config folder"),
-            )
-            .context("AppendMenuW(open config folder)")?;
-            AppendMenuW(menu, MF_STRING, CMD_RELOAD as usize, w!("Reload config"))
-                .context("AppendMenuW(reload)")?;
-            AppendMenuW(menu, MF_STRING, CMD_QUIT as usize, w!("Quit"))
-                .context("AppendMenuW(quit)")?;
         }
 
         self.menu = Some(menu);
@@ -203,7 +163,6 @@ impl State {
 
     fn install_tray_icon(&mut self) -> Result<()> {
         let hwnd = self.hwnd()?;
-        self.rebuild_menu().context("build menu")?;
 
         let icon = create_tray_icon().unwrap_or_else(|_| {
             unsafe {
@@ -214,7 +173,6 @@ impl State {
             }
             .unwrap_or_default()
         });
-        let tip = "monitortray";
 
         let mut nid = NOTIFYICONDATAW::default();
         nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
@@ -223,7 +181,7 @@ impl State {
         nid.uFlags = NIF_MESSAGE | NIF_TIP | NIF_ICON;
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = icon;
-        write_tip(&mut nid, tip);
+        write_tip(&mut nid, TOOLTIP_DEFAULT);
 
         shell_notify_icon(NIM_ADD, &nid).context("Shell_NotifyIconW(NIM_ADD)")?;
         self.tray = nid;
@@ -231,21 +189,17 @@ impl State {
         Ok(())
     }
 
-    fn update_tooltip(&mut self) {
-        let tip = match self.last_error.as_deref() {
-            None => "monitortray",
-            Some(e) => e,
-        };
-        write_tip(&mut self.tray, tip);
+    fn set_tooltip(&mut self, text: &str) {
+        write_tip(&mut self.tray, text);
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &self.tray);
         }
     }
 
-    fn show_menu_and_handle(&mut self) -> Result<()> {
+    fn show_menu(&self) -> Result<u16> {
         let hwnd = self.hwnd()?;
         let Some(menu) = self.menu else {
-            return Ok(());
+            return Ok(0);
         };
 
         unsafe {
@@ -262,91 +216,8 @@ impl State {
                 None,
             );
 
-            if cmd.0 == 0 {
-                return Ok(());
-            }
-
-            let cmd = cmd.0 as u16;
-            match cmd {
-                CMD_QUIT => {
-                    self.remove_tray_icon();
-                    PostQuitMessage(0);
-                }
-                CMD_RELOAD => {
-                    self.reload_config().context("reload config")?;
-                }
-                CMD_TOGGLE_STARTUP => {
-                    self.toggle_start_with_windows().context("toggle startup")?;
-                }
-                CMD_EDIT_CONFIG => {
-                    self.edit_config().context("edit config")?;
-                }
-                CMD_OPEN_CONFIG_FOLDER => {
-                    self.open_config_folder().context("open config folder")?;
-                }
-                _ => {
-                    if let Some((_name, value)) = self.inputs.get(&cmd).cloned() {
-                        self.set_input(value).context("set input")?;
-                    }
-                }
-            }
+            Ok(cmd.0 as u16)
         }
-
-        Ok(())
-    }
-
-    fn set_input(&mut self, value: u16) -> Result<()> {
-        self.backend
-            .set_input(&self.display_selector, value)
-            .with_context(|| format!("set input {value} on '{}'", self.display_selector))?;
-        self.last_error = None;
-        self.update_tooltip();
-        Ok(())
-    }
-
-    fn reload_config(&mut self) -> Result<()> {
-        let (display_selector, inputs, start_with_windows_pref) =
-            load_display_and_inputs(&*self.backend)?;
-        self.display_selector = display_selector;
-        self.inputs = inputs;
-        let (start_with_windows, startup_error) = common::apply_startup_pref(
-            start_with_windows_pref,
-            |enabled| autostart::set_enabled(enabled),
-            || autostart::is_enabled(),
-        );
-        self.start_with_windows = start_with_windows;
-        self.rebuild_menu()?;
-        self.last_error = startup_error;
-        self.update_tooltip();
-        Ok(())
-    }
-
-    fn toggle_start_with_windows(&mut self) -> Result<()> {
-        let next = !self.start_with_windows;
-        autostart::set_enabled(next).context("update registry startup entry")?;
-        let _path = config::patch_start_with_windows(next).context("update config")?;
-        self.start_with_windows = next;
-        self.rebuild_menu()?;
-        self.last_error = None;
-        self.update_tooltip();
-        Ok(())
-    }
-
-    fn edit_config(&mut self) -> Result<()> {
-        let path = config::ensure_config_file_exists().context("ensure config exists")?;
-        shell_open(&path).with_context(|| format!("open {}", path.display()))?;
-        Ok(())
-    }
-
-    fn open_config_folder(&mut self) -> Result<()> {
-        let Some(path) = config::resolve_config_path() else {
-            return Err(anyhow!("No config path available"));
-        };
-        let parent = path
-            .parent()
-            .ok_or_else(|| anyhow!("No parent directory for config path"))?;
-        shell_open(parent).with_context(|| format!("open {}", parent.display()))?;
-        Ok(())
     }
 
     fn remove_tray_icon(&mut self) {
@@ -359,7 +230,90 @@ impl State {
     }
 }
 
-impl Drop for State {
+struct WinStartupManager;
+
+impl StartupManager for WinStartupManager {
+    fn is_enabled(&self) -> Result<bool> {
+        autostart::is_enabled().context("read registry startup entry")
+    }
+
+    fn set_enabled(&self, enabled: bool) -> Result<()> {
+        autostart::set_enabled(enabled).context("update registry startup entry")
+    }
+}
+
+struct WinApp {
+    ui: WinTrayUi,
+    model: TrayModel,
+    startup: WinStartupManager,
+}
+
+impl WinApp {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            ui: WinTrayUi {
+                hwnd: None,
+                tray: NOTIFYICONDATAW::default(),
+                menu: None,
+            },
+            model: TrayModel::new()?,
+            startup: WinStartupManager,
+        })
+    }
+
+    fn rebuild_menu(&mut self) -> Result<()> {
+        let spec = self.model.menu_spec();
+        self.ui.rebuild_menu(&spec)
+    }
+
+    fn refresh_tooltip(&mut self) {
+        let tip = self.model.last_error().unwrap_or(TOOLTIP_DEFAULT);
+        self.ui.set_tooltip(tip);
+    }
+
+    fn handle_menu_click(&mut self) -> Result<()> {
+        let cmd_id = self.ui.show_menu()?;
+        if cmd_id == 0 {
+            return Ok(());
+        }
+
+        let Some(cmd) = decode(cmd_id, self.model.inputs()) else {
+            return Ok(());
+        };
+
+        let update = self.model.handle(cmd, &self.startup)?;
+        self.apply_update(update)
+    }
+
+    fn apply_update(&mut self, update: ModelUpdate) -> Result<()> {
+        if let Some(path) = update.open_path {
+            if let Err(err) = shell_open(&path) {
+                let update = self.model.note_error(err);
+                self.apply_update(update)?;
+                return Ok(());
+            }
+        }
+
+        if update.refresh_menu {
+            self.rebuild_menu()?;
+        }
+
+        if update.refresh_tooltip {
+            self.refresh_tooltip();
+        }
+
+        if update.quit {
+            self.ui.remove_tray_icon();
+            unsafe {
+                PostQuitMessage(0);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for WinTrayUi {
     fn drop(&mut self) {
         self.remove_tray_icon();
     }
@@ -369,7 +323,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     match msg {
         WM_NCCREATE => {
             let cs = &*(lparam.0 as *const CREATESTRUCTW);
-            let state_ptr = cs.lpCreateParams as *mut State;
+            let state_ptr = cs.lpCreateParams as *mut WinApp;
             windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
                 hwnd,
                 windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
@@ -378,30 +332,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         WM_TRAYICON => {
-            let state = get_state(hwnd);
-            if state.is_null() {
+            let app = get_app(hwnd);
+            if app.is_null() {
                 return DefWindowProcW(hwnd, msg, wparam, lparam);
             }
-            let state = &mut *state;
+            let app = &mut *app;
 
             let evt = lparam.0 as u32;
             if evt == WM_RBUTTONUP || evt == WM_LBUTTONUP {
-                if let Err(e) = state.show_menu_and_handle() {
-                    state.last_error = Some(e.to_string());
-                    state.update_tooltip();
+                if let Err(err) = app.handle_menu_click() {
+                    let update = app.model.note_error(err);
+                    let _ = app.apply_update(update);
                 }
                 return LRESULT(0);
             }
         }
         windows::Win32::UI::WindowsAndMessaging::WM_NCDESTROY => {
-            let state = get_state(hwnd);
-            if !state.is_null() {
+            let app = get_app(hwnd);
+            if !app.is_null() {
                 windows::Win32::UI::WindowsAndMessaging::SetWindowLongPtrW(
                     hwnd,
                     windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
                     0,
                 );
-                drop(Box::from_raw(state));
+                drop(Box::from_raw(app));
             }
         }
         _ => {}
@@ -410,27 +364,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-fn get_state(hwnd: HWND) -> *mut State {
+fn get_app(hwnd: HWND) -> *mut WinApp {
     unsafe {
         let ptr = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
             hwnd,
             windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
         );
-        ptr as *mut State
+        ptr as *mut WinApp
     }
-}
-
-fn load_display_and_inputs(
-    backend: &dyn Backend,
-) -> Result<(String, BTreeMap<u16, (String, u16)>, Option<bool>)> {
-    let report = backend.list_displays().context("list displays")?;
-    let cfg = config::load_optional()?;
-    let resolved = config::resolve(cfg.as_ref(), &report.displays, None);
-    let start_with_windows_pref = cfg.as_ref().and_then(|c| c.start_with_windows);
-
-    let inputs = common::build_inputs(&resolved.inputs, CMD_BASE_INPUT);
-
-    Ok((resolved.display_selector, inputs, start_with_windows_pref))
 }
 
 fn shell_open(path: &Path) -> Result<()> {
