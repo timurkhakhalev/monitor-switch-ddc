@@ -778,7 +778,7 @@ mod macos_tray {
             if let Ok(f) = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open("/tmp/monitorctl.out")
+                .open("/tmp/monitortray.out")
             {
                 let _ = libc::dup2(f.as_raw_fd(), libc::STDOUT_FILENO);
             }
@@ -786,7 +786,7 @@ mod macos_tray {
             if let Ok(f) = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open("/tmp/monitorctl.err")
+                .open("/tmp/monitortray.err")
             {
                 let _ = libc::dup2(f.as_raw_fd(), libc::STDERR_FILENO);
             }
@@ -1157,7 +1157,7 @@ mod macos_tray {
         if let Ok(mut f) = OpenOptions::new()
             .create(true)
             .append(true)
-            .open("/tmp/monitorctl.err")
+            .open("/tmp/monitortray.err")
         {
             let _ = writeln!(f, "{prefix}: {msg}");
         }
