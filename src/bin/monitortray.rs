@@ -22,7 +22,7 @@ mod windows_tray {
     use std::{collections::BTreeMap, mem::size_of, path::Path};
 
     use anyhow::{anyhow, Context, Result};
-    use monitorctl::{config, platform, platform::Backend};
+    use monitorctl::{config, platform, platform::Backend, tray::common};
     use windows::{
         core::{w, Error as WinError, PCWSTR},
         Win32::{
@@ -128,7 +128,11 @@ mod windows_tray {
             let backend = platform::backend().context("select backend")?;
             let (display_selector, inputs, start_with_windows_pref) =
                 load_display_and_inputs(&*backend)?;
-            let (start_with_windows, startup_error) = apply_startup_pref(start_with_windows_pref);
+            let (start_with_windows, startup_error) = common::apply_startup_pref(
+                start_with_windows_pref,
+                |enabled| autostart::set_enabled(enabled),
+                || autostart::is_enabled(),
+            );
 
             Ok(Self {
                 hwnd: None,
@@ -163,7 +167,7 @@ mod windows_tray {
             }
 
             for (cmd, (name, value)) in &self.inputs {
-                let label = format!("{} ({value})", pretty_input_label(name));
+                let label = format!("{} ({value})", common::pretty_input_label(name));
                 let wlabel = wide(&label);
                 unsafe {
                     AppendMenuW(
@@ -324,7 +328,11 @@ mod windows_tray {
                 load_display_and_inputs(&*self.backend)?;
             self.display_selector = display_selector;
             self.inputs = inputs;
-            let (start_with_windows, startup_error) = apply_startup_pref(start_with_windows_pref);
+            let (start_with_windows, startup_error) = common::apply_startup_pref(
+                start_with_windows_pref,
+                |enabled| autostart::set_enabled(enabled),
+                || autostart::is_enabled(),
+            );
             self.start_with_windows = start_with_windows;
             self.rebuild_menu()?;
             self.last_error = startup_error;
@@ -444,42 +452,9 @@ mod windows_tray {
         let resolved = config::resolve(cfg.as_ref(), &report.displays, None);
         let start_with_windows_pref = cfg.as_ref().and_then(|c| c.start_with_windows);
 
-        let mut inputs: BTreeMap<u16, (String, u16)> = BTreeMap::new();
-        let mut next_cmd = CMD_BASE_INPUT;
-
-        if resolved.inputs.is_empty() {
-            // Defaults for your XG27ACS setup; override with config for other monitors.
-            for (k, v) in [("dp1", 15u16), ("usb_c", 26u16)] {
-                inputs.insert(next_cmd, (k.to_string(), v));
-                next_cmd += 1;
-            }
-        } else {
-            let mut keys = resolved
-                .inputs
-                .iter()
-                .map(|(k, v)| (k.to_string(), *v))
-                .collect::<Vec<_>>();
-            keys.sort_by(|a, b| a.0.cmp(&b.0));
-            for (k, v) in keys {
-                inputs.insert(next_cmd, (k, v));
-                next_cmd += 1;
-            }
-        }
+        let inputs = common::build_inputs(&resolved.inputs, CMD_BASE_INPUT);
 
         Ok((resolved.display_selector, inputs, start_with_windows_pref))
-    }
-
-    fn apply_startup_pref(pref: Option<bool>) -> (bool, Option<String>) {
-        match pref {
-            Some(enabled) => match autostart::set_enabled(enabled) {
-                Ok(()) => (enabled, None),
-                Err(e) => (enabled, Some(e.to_string())),
-            },
-            None => match autostart::is_enabled() {
-                Ok(enabled) => (enabled, None),
-                Err(e) => (false, Some(e.to_string())),
-            },
-        }
     }
 
     fn shell_open(path: &Path) -> Result<()> {
@@ -636,18 +611,6 @@ mod windows_tray {
         Ok(())
     }
 
-    fn pretty_input_label(key: &str) -> &str {
-        match key {
-            "dp1" => "DisplayPort 1",
-            "dp2" => "DisplayPort 2",
-            "usb_c" => "USB-C",
-            "usbc" => "USB-C",
-            "hdmi1" => "HDMI 1",
-            "hdmi2" => "HDMI 2",
-            _ => key,
-        }
-    }
-
     fn create_tray_icon() -> Result<windows::Win32::UI::WindowsAndMessaging::HICON> {
         // Create a simple 32x32 ARGB icon (dark background + blue "monitor" outline).
         const W: i32 = 32;
@@ -751,7 +714,7 @@ mod macos_tray {
         base::{id, nil},
         foundation::{NSAutoreleasePool, NSInteger, NSString},
     };
-    use monitorctl::{config, platform, platform::Backend};
+    use monitorctl::{config, platform, platform::Backend, tray::common};
     use objc::{
         class,
         declare::ClassDecl,
@@ -846,7 +809,11 @@ mod macos_tray {
             let backend = platform::backend().context("select backend")?;
             let (display_selector, inputs, start_at_login_pref, load_error) =
                 load_display_and_inputs(&*backend);
-            let (start_at_login, startup_error) = apply_startup_pref(start_at_login_pref);
+            let (start_at_login, startup_error) = common::apply_startup_pref(
+                start_at_login_pref,
+                |enabled| autostart::set_enabled(enabled),
+                || autostart::is_enabled(),
+            );
 
             let last_error = load_error.or(startup_error);
 
@@ -886,7 +853,7 @@ mod macos_tray {
                 add_header(menu, "Inputs");
 
                 for (cmd, (name, value)) in &self.inputs {
-                    let label = format!("{} ({value})", pretty_input_label(name));
+                    let label = format!("{} ({value})", common::pretty_input_label(name));
                     add_action_item(
                         menu,
                         &label,
@@ -1009,7 +976,11 @@ mod macos_tray {
                 load_display_and_inputs(&*self.backend);
             self.display_selector = display_selector;
             self.inputs = inputs;
-            let (start_at_login, startup_error) = apply_startup_pref(start_at_login_pref);
+            let (start_at_login, startup_error) = common::apply_startup_pref(
+                start_at_login_pref,
+                |enabled| autostart::set_enabled(enabled),
+                || autostart::is_enabled(),
+            );
             self.start_at_login = start_at_login;
             self.rebuild_menu(target)?;
             self.last_error = load_error.or(startup_error);
@@ -1056,7 +1027,14 @@ mod macos_tray {
     ) {
         let cfg = match config::load_optional() {
             Ok(v) => v,
-            Err(e) => return ("1".to_string(), default_inputs(), None, Some(e.to_string())),
+            Err(e) => {
+                return (
+                    "1".to_string(),
+                    common::default_inputs(CMD_BASE_INPUT),
+                    None,
+                    Some(e.to_string()),
+                )
+            }
         };
         let start_at_login_pref = cfg.as_ref().and_then(|c| c.start_with_windows);
 
@@ -1066,7 +1044,7 @@ mod macos_tray {
         };
 
         let resolved = config::resolve(cfg.as_ref(), &displays, None);
-        let inputs = build_inputs(&resolved.inputs);
+        let inputs = common::build_inputs(&resolved.inputs, CMD_BASE_INPUT);
 
         (
             resolved.display_selector,
@@ -1074,52 +1052,6 @@ mod macos_tray {
             start_at_login_pref,
             load_error,
         )
-    }
-
-    fn build_inputs(
-        inputs: &std::collections::HashMap<String, u16>,
-    ) -> BTreeMap<u16, (String, u16)> {
-        if inputs.is_empty() {
-            return default_inputs();
-        }
-
-        let mut keys = inputs
-            .iter()
-            .map(|(k, v)| (k.to_string(), *v))
-            .collect::<Vec<_>>();
-        keys.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let mut out: BTreeMap<u16, (String, u16)> = BTreeMap::new();
-        let mut next_cmd = CMD_BASE_INPUT;
-        for (k, v) in keys {
-            out.insert(next_cmd, (k, v));
-            next_cmd += 1;
-        }
-        out
-    }
-
-    fn default_inputs() -> BTreeMap<u16, (String, u16)> {
-        // Defaults for your XG27ACS setup; override with config for other monitors.
-        let mut inputs: BTreeMap<u16, (String, u16)> = BTreeMap::new();
-        let mut next_cmd = CMD_BASE_INPUT;
-        for (k, v) in [("dp1", 15u16), ("usb_c", 26u16)] {
-            inputs.insert(next_cmd, (k.to_string(), v));
-            next_cmd += 1;
-        }
-        inputs
-    }
-
-    fn apply_startup_pref(pref: Option<bool>) -> (bool, Option<String>) {
-        match pref {
-            Some(enabled) => match autostart::set_enabled(enabled) {
-                Ok(()) => (enabled, None),
-                Err(e) => (enabled, Some(e.to_string())),
-            },
-            None => match autostart::is_enabled() {
-                Ok(enabled) => (enabled, None),
-                Err(e) => (false, Some(e.to_string())),
-            },
-        }
     }
 
     fn shell_open(path: &Path) -> Result<()> {
@@ -1131,18 +1063,6 @@ mod macos_tray {
             return Err(anyhow!("open failed (exit={status})"));
         }
         Ok(())
-    }
-
-    fn pretty_input_label(key: &str) -> &str {
-        match key {
-            "dp1" => "DisplayPort 1",
-            "dp2" => "DisplayPort 2",
-            "usb_c" => "USB-C",
-            "usbc" => "USB-C",
-            "hdmi1" => "HDMI 1",
-            "hdmi2" => "HDMI 2",
-            _ => key,
-        }
     }
 
     unsafe fn nsstring(s: &str) -> id {
