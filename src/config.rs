@@ -51,7 +51,7 @@ pub struct ResolvedConfig {
 pub fn default_inputs_map() -> HashMap<String, u16> {
     DEFAULT_INPUTS
         .iter()
-        .map(|(k, v)| (k.to_string(), *v))
+        .map(|&(k, v)| (k.to_string(), v))
         .collect()
 }
 
