@@ -108,6 +108,42 @@ impl WindowsDxva2Backend {
     }
 }
 
+#[cfg(target_os = "windows")]
+struct MonitorList {
+    mons: Vec<win::PHYSICAL_MONITOR>,
+}
+
+#[cfg(target_os = "windows")]
+impl MonitorList {
+    fn new() -> Result<Self> {
+        let mons =
+            unsafe { win::enum_physical_monitors().context("enumerating physical monitors")? };
+        Ok(Self { mons })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.mons.is_empty()
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl std::ops::Deref for MonitorList {
+    type Target = [win::PHYSICAL_MONITOR];
+
+    fn deref(&self) -> &Self::Target {
+        &self.mons
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for MonitorList {
+    fn drop(&mut self) {
+        if !self.mons.is_empty() {
+            unsafe { win::destroy(&mut self.mons) };
+        }
+    }
+}
+
 impl super::Backend for WindowsDxva2Backend {
     fn list_displays(&self) -> Result<DisplayListReport> {
         #[cfg(not(target_os = "windows"))]
@@ -156,9 +192,8 @@ impl super::Backend for WindowsDxva2Backend {
         }
 
         #[cfg(target_os = "windows")]
-        unsafe {
-            let mut mons =
-                win::enum_physical_monitors().context("enumerating physical monitors")?;
+        {
+            let mons = MonitorList::new()?;
             if mons.is_empty() {
                 bail!("No physical monitors found via Dxva2.");
             }
@@ -166,7 +201,6 @@ impl super::Backend for WindowsDxva2Backend {
             let idx = resolve_selector(display_selector, &mons)?;
             let mon = &mons[idx];
             win::set_vcp(mon, 0x60, value as u32).context("SetVCPFeature(VCP=0x60)")?;
-            win::destroy(&mut mons);
             Ok(())
         }
     }
@@ -179,9 +213,8 @@ impl super::Backend for WindowsDxva2Backend {
         }
 
         #[cfg(target_os = "windows")]
-        unsafe {
-            let mut mons =
-                win::enum_physical_monitors().context("enumerating physical monitors")?;
+        {
+            let mons = MonitorList::new()?;
             if mons.is_empty() {
                 bail!("No physical monitors found via Dxva2.");
             }
@@ -190,7 +223,6 @@ impl super::Backend for WindowsDxva2Backend {
             let mon = &mons[idx];
             let (cur, _max) =
                 win::get_vcp(mon, 0x60).context("GetVCPFeatureAndVCPFeatureReply(VCP=0x60)")?;
-            win::destroy(&mut mons);
 
             Ok(u16::try_from(cur).unwrap_or(u16::MAX))
         }
