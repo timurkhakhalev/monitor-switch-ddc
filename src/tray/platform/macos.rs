@@ -5,7 +5,7 @@ use std::{
     io::Write,
     os::fd::AsRawFd,
     path::{Path, PathBuf},
-    process::Command,
+    process::Command as ProcessCommand,
     sync::Once,
 };
 
@@ -117,7 +117,6 @@ impl MacTrayUi {
 
             self.status_item = Some(status_item);
             self.target = Some(target);
-            self.rebuild_menu(target).context("build menu")?;
             self.set_tooltip(APP_NAME);
         }
 
@@ -357,7 +356,7 @@ fn log_to_tmp(prefix: &str, msg: &str) {
 }
 
 fn shell_open(path: &Path) -> Result<()> {
-    let status = Command::new("open")
+    let status = ProcessCommand::new("open")
         .arg(path)
         .status()
         .with_context(|| format!("running open {}", path.display()))?;
@@ -433,7 +432,7 @@ mod autostart {
 
     fn gui_uid() -> u32 {
         // LaunchAgents don't always inherit a useful env, so shell out to `id -u`.
-        Command::new("id")
+        ProcessCommand::new("id")
             .arg("-u")
             .output()
             .ok()
@@ -471,7 +470,7 @@ mod autostart {
     }
 
     fn launchctl(args: &[&str]) -> Result<()> {
-        let out = Command::new("launchctl")
+        let out = ProcessCommand::new("launchctl")
             .args(args)
             .output()
             .with_context(|| format!("running launchctl {}", args.join(" ")))?;
