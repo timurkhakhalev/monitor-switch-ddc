@@ -13,7 +13,7 @@ repository = "https://github.com/timurkhakhalev/monitor-switch-ddc"
 cargo-clippy = []
 
 [dependencies]
-anyhow = "1.0.95"
+anyhow = "1.0.102"
 clap = { version = "4.5.23", features = ["derive"] }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = "1.0.134"
